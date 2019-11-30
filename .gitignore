@@ -1,0 +1,4 @@
+.stack-work/
+free-builds.cabal
+*~
+.ionide
