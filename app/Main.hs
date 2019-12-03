@@ -1,6 +1,7 @@
 module Main where
 
-import Lib
+import TypeFamilies
 
 main :: IO ()
-main = undefined
+main = putStrLn out >> putStrLn out'
+

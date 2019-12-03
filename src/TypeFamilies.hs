@@ -2,130 +2,96 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-} -- why the fuck is this not on by default??
 module TypeFamilies where
 
-import Control.Applicative.Free
-import Data.Functor.Coyoneda
+import Data.Typeable (cast, Typeable)
+import Data.Generics.Aliases
 
-class GMapKey k where
-    data GMap k :: * -> *
-    empty       :: GMap k v
-    lookup      :: k -> GMap k v -> Maybe v
-    insert      :: k -> v -> GMap k v -> GMap k v
+data Labeled a =
+    Anon a
+    | Labeled String a deriving (Functor, Typeable)
 
-data Hideable a = a ~ Int  => IntHideable a | a ~ String => StringHideable a
+forget (Anon x) = x
+forget (Labeled _ x) = x
 
--- lol, this has no constructor, so correct pattern matching is possible at a later point
-newtype NonExistant = Hideable Char
+instance Applicative Labeled where
+    pure = Anon
+    f <*> z = Anon (forget f $ forget z)
 
--- Note that we can use existential quantification to completely remove the type signature,
--- though this is not what we want since free applicative will do this for us
-data AnyHideable = forall a. AnyHideable (Hideable a)
+-- we need our own applicative because we want to quantify over Typeable.
+data FreeA f a where
+    Pure :: a -> FreeA f a
+    Ap   :: Typeable a => f a -> FreeA f (a -> b) -> FreeA f b
 
-incHideable :: Hideable Int -> Int
-incHideable (IntHideable x) = x + 1
+instance Functor (FreeA f) where
+    fmap f (Pure a)   = Pure (f a)
+    fmap f (Ap x y)   = Ap x ((f .) <$> y)
+    
+instance Applicative (FreeA f) where
+    pure = Pure
+    Pure f <*> y = fmap f y
+    Ap x y <*> z = Ap x (flip <$> y <*> z)
 
-foo :: AnyHideable -> Int
-foo (AnyHideable x) = case x of
-    IntHideable {} -> incHideable x
-    StringHideable {} -> 0
+runAp :: Applicative g => (forall x. Typeable x => f x -> g x) -> FreeA f a -> g a
+runAp _ (Pure x) = pure x
+runAp u (Ap f x) = flip id <$> u f <*> runAp u x
 
-a = foo (AnyHideable (StringHideable "hello"))
+-- | Tear down a free 'Applicative' using iteration.
+iterAp :: Functor g => (g a -> a) -> FreeA g a -> a
+iterAp algebra = go
+  where go (Pure a) = a
+        go (Ap underlying apply) = algebra (go . (apply <*>) . pure <$> underlying)
 
--- Ok, now lets try to write a natural transformation that matches on type. We will perform this on top of Hideable.
--- Let's "replace" only the integers with their increment.
-increment :: Hideable Int -> Hideable Int
-increment (IntHideable i) = IntHideable (i + 1)
+hoistAp :: (forall a. f a -> g a) -> FreeA f b -> FreeA g b
+hoistAp _ (Pure a) = Pure a
+hoistAp f (Ap x y) = Ap (f x) (hoistAp f y)
 
-eta :: Hideable a -> Hideable a
-eta x = case x of
-    IntHideable {} -> increment x
-    StringHideable {} -> x
+type Expr = FreeA Labeled
 
--- Okay, this is seriously insane. I think this is everything I ever wanted. Now we will want to not only operate
--- on my "basic data types" string and int, but also on stuffs like String -> Int. Currently, Hideable (String -> Int) has
--- absolutely no constructors, so it is the empty type. Thus the free applicative over hideable is not very useful.
+-- we don't want to really use the regular "Pure" since you can't replace whatever you put in there, so this is the solution
+expr :: Typeable a => a -> Expr a
+expr x = Ap (Anon x) (Pure id)
 
--- Make generic over any family of base types?
-data ExprGADT a where
-    GInt :: Int -> ExprGADT Int
-    GString :: String -> ExprGADT String
-    GFun :: (ExprGADT b -> ExprGADT c) -> ExprGADT (b -> c)
-    GProd :: ExprGADT b -> ExprGADT c -> ExprGADT (b, c)
-    GCoProd :: ExprGADT b -> ExprGADT c -> ExprGADT (Either b c)
+name :: Typeable a => String -> a -> Expr a
+name s x = Ap (Labeled s x) (Pure id)
 
--- type Expr2 a = Coyoneda ExprGADT a
+-- The following does not typecheck:
+-- replace :: Typeable a => a -> a
+-- replace x = case (cast x :: Maybe Int) of
+--                 Just y -> 5
+--                 Nothing -> x
+-- ..so you really can't cheat this blatantly. The output type cannot be generic in a. It suprises me that haskell can't upcast, but I
+-- guess this is part of parametericity. Thus the only place where you really can replace, is right before execution in some kind of interpreter
+-- that gets some options of what to replace with what. Which is fine I guess, I don't see a reason why this should constrain me, I have taken
+-- this too far anyways and I want to get it done.
 
+fn :: (Typeable a) => Expr a -> Expr String
+fn x = case (cast x :: Maybe (Expr (Int -> String))) of
+        Just f -> f <*> expr 0
+        Nothing -> Pure "no comment"
 
--- This is absolutely not functorial, since you can't even lift a Int -> Float since Float lifts to the empty type.
--- One solution might be to erase the type parameter with existential types - this causes the free applicative to not
--- be used on arbitrary types, but only on one type. Thus we will just have a family of functions from one type to
--- itself and we would loose static type checking.
--- Now we can apply the Yoneda trick:
-data Expr z =
-    -- look at the type of the constructor - its output truly is the natural transformation corresponding to
-    -- (ExprGADT Int) under the yoneda isomorphism. This is basically a constructor that is isomorphic to the
-    -- old constructor. To not get confused, one should always just ignore the last argument and assume it will
-    -- be the identity map (as in the yoneda isomorphism).
-    EInt Int (Int -> z)
-    | EString String (String -> z)
-    | forall b c. EFun (Expr b -> Expr c) ((b -> c) -> z)
-    | forall b c. EProd (Expr b, Expr c) ((b, c) -> z)
-    | forall b c. ECoProd (Either (Expr b) (Expr c)) (Either b c -> z)
+-- At least this works. This shall suffice. But can I compose multiple replacements? Composition probably has to happen before interpretation.
+-- Let's write some toy code.
 
--- Yes, Expr is a functor, but this is not magic. It is not a functor in the natural transformations that would correspond to
--- objects in ExprGADT, but rather functorial in the mysterious argument z, which is an artefact of currying into a natural transformation.
--- Thus the functoriality of Expr can't be transfered onto GADTExpr. On a more down-to-earth level, we made ExprGADT into a functor
--- by adding just parameterizing additionally on a "what to do next" argument, so the functor instance can now be cannonically defined
--- by cheating:
-instance Functor Expr where
-    fmap f (EInt x i) = EInt x (f . i)
-    fmap f (EString x i) = EString x (f . i)
-    fmap f (EFun x i) = EFun x (f . i)
-    fmap f (EProd x i) = EProd x (f . i)
-    fmap f (ECoProd x i) = ECoProd x (f . i)
+secretIngredient :: Expr String
+secretIngredient = expr show <*> (name "mystery operation" (+) <*> name "cosmological constant" (3 :: Int) <*> name "my birthday" 77)
 
--- But our cheating does not really have negative effects, since we will avoid mapping on Expr directly - we want to use a free applicative
--- anyways and mapping would only ocurr on rare cases.
-fw :: (Functor f) => (forall b . (a -> b) -> f b) -> f a
-fw f = f id
+phrase = expr (++) <*> secretIngredient <*> name "api key" "adhfypvq[ao"
 
-bw :: (Functor f) => f a -> (forall b . (a -> b) -> f b)
-bw x f = fmap f x
+-- Probably one could also auto-generate the names with a GUID/Random monad or hashes(there is a good looking "hashable" package) or sth.
+-- For now I will procrastinate that.
 
--- Now we can easily get the old constructors by conststructing toghether with the identity map
-eint n = fw (EInt n)
-estring s = fw (EString s)
-efun :: (Expr b -> Expr c) -> Expr (b -> c)
-efun f = fw (EFun f)
-eprod :: (Expr b, Expr c) -> Expr (b, c)
-eprod x = fw (EProd x)
-ecoprod :: Either (Expr b) (Expr c) -> Expr (Either b c)
-ecoprod x = fw (ECoProd x)
+-- iterAp maps the values around inside "Labeled" and at the end applies forget to get them out.
+out = iterAp forget phrase
 
--- Now lets start the real fun! Replaceable expressions!
-type RExpr a = Ap Expr a
--- evaluation should always be our start type, since the start type is not replaceable
+-- lets replace the cosmological constant
+incrIfInt :: Typeable a => a -> a
+incrIfInt = mkT ((+100) :: Int -> Int)
 
-incr :: Expr Int -> Expr Int
--- the nonexhaustive match is because the input of type Expr Int could literally constructed in any way -
--- as long as afterwards a function z -> Int was slapped on top.
-incr (EInt n i) = EInt (n+1) i
-decr :: Expr Int -> Expr Int
-decr (EInt n i) = EInt (n-1) i
+replace :: Typeable a => Labeled a -> Labeled a
+replace (Labeled "cosmological constant" value) = Labeled "cosmolocial constant" $ incrIfInt value
+replace x = x
 
--- note that replacement will not work on "Pure id", since it is not an Expr. We can only apply natural transformations
--- forall z. Expr z -> Expr z
-expr = Ap (eint 5) (Ap (efun incr) (Pure id))
--- now we can easily replace incr by decr.
-replace :: Expr a -> Expr a
-replace (EFun f i) = undefined -- How can I specifically match on the constructor of f with type parameters Int, Int?
-
-
--- data Expr' z =
---     EInt' Int (Int -> z)
---     | EString String (String -> z)
---     | forall b c. EFun (Expr b -> Expr c) ((b -> c) -> z)
---     | forall b c. EProd (Expr b, Expr c) ((b, c) -> z)
---     | forall b c. ECoProd (Either (Expr b) (Expr c)) (Either b c -> z)
+out' = forget $ runAp replace phrase

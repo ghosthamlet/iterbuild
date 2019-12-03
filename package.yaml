@@ -24,6 +24,7 @@ dependencies:
 - free
 - mtl
 - kan-extensions
+- syb
 
 library:
   source-dirs: src
