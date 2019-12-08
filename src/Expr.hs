@@ -1,6 +1,6 @@
-
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE DeriveFunctor #-}
 
 module Expr where
 
@@ -37,16 +37,28 @@ replace :: (forall a. Typeable a => f a -> g a) -> FreeA f b -> FreeA g b
 replace _ (Pure a) = Pure a
 replace f (Ap x y) = Ap (f x) (replace f y)
 
-class Monad f => Wrapped f where
-    forget :: f a -> a
-    -- We need: `forget . return = id`, `fmap forget = join`
+
+data Labeled a =
+    Anon a
+    | Labeled String a deriving (Functor, Typeable)
+
+instance Applicative Labeled where
+    pure = Anon
+    f <*> z = Anon (forget f $ forget z)
+
+-- lultz, I can use forget - lazyness for the win.
+instance Monad Labeled where
+    return = Anon
+    x >>= f = forget (fmap f x)
+
+type Expr = FreeA Labeled
 
 -- we don't want to really use the regular "Pure" since you can't replace whatever you put in there, so this is the solution
-expr :: (Wrapped f, Typeable a) => a -> FreeA f a
+expr :: Typeable a => a -> Expr a
 expr x = Ap (return x) (Pure id)
 
 -- computes the value of the expression
-collapse :: (Functor f, Wrapped f) => FreeA f a -> a
+collapse :: Expr a -> a
 collapse = iterAp forget
 
 -- compose replacers, on the right comes the generic replacer and on the left the specific replacer.
@@ -54,14 +66,18 @@ also :: (Typeable a, Typeable b) => (b -> b) -> (a -> a) -> (a -> a)
 also f g = extT g f
 infixr 7 `also`
 
--- Example usage(Int anotation is necessary since otherwise 1 is a Num.):
--- replace :: Typeable a => a -> a
--- replace = (+(1 :: Int)) `also` (++"hello") `also` id
+forget (Anon x) = x
+forget (Labeled _ x) = x
 
--- -- This exists so type inference works
--- fmapM :: (a -> a) -> Maybe a -> Maybe a
--- fmapM = fmap
+label :: Typeable a => String -> a -> Expr a
+label s x = Ap (Labeled s x) (Pure id)
 
--- replaceM :: Typeable a => Maybe a -> Maybe a
--- replaceM = fmapM (+(1 :: Int)) `also` fmapM (++"hello") `also` id
+-- replace the elements with the correct label
+replaceKey :: String -> (a -> a) -> Labeled a -> Labeled a
+replaceKey key f (Anon x) = Anon x
+replaceKey key f (Labeled key' value) = if key == key'
+    then Labeled key' $ f value
+    else Labeled key' value
 
+-- Note that for now you can't directly replace a sub-expression, for doing that you need to pattern match directly on the free
+-- applicative, I might write a combinator for that at some point.

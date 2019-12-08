@@ -3,7 +3,6 @@
 module Main where
 
 import Expr
-import Labeled
 import Data.Typeable
 
 
@@ -15,7 +14,7 @@ import Data.Typeable
 -- More fine tuned ideas(like auto-naming of function parameters that can be refered to by specifying the function and then the param name)
 -- should probably be only be implemented after I have written some code in this language. There are probably ways to avoid boilerplate, because
 -- quick iteration is the name of the game here.
-finalString :: Expr String
+finalString :: FreeA Labeled String
 finalString = do
         (++) <- Pure (++)
         (+) <- label "operator" (+)
