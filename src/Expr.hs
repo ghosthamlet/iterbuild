@@ -6,6 +6,7 @@ module Expr where
 
 import Data.Typeable
 import Data.Generics.Aliases
+import Data.Functor.Compose
 
 -- we need our own free applicative because we want to quantify over Typeable, since otherwise the
 -- compiler enforces parametricity.
@@ -72,12 +73,27 @@ forget (Labeled _ x) = x
 label :: Typeable a => String -> a -> Expr a
 label s x = Ap (Labeled s x) (Pure id)
 
--- replace the elements with the correct label
-replaceKey :: String -> (a -> a) -> Labeled a -> Labeled a
-replaceKey key f (Anon x) = Anon x
-replaceKey key f (Labeled key' value) = if key == key'
+-- map the elements with the correct label
+mapKey :: String -> (a -> a) -> Labeled a -> Labeled a
+mapKey key f (Anon x) = Anon x
+mapKey key f (Labeled key' value) = if key == key'
     then Labeled key' $ f value
     else Labeled key' value
 
+replaceKey :: String -> a -> Labeled a -> Labeled a
+replaceKey s = mapKey s . const
+
 -- Note that for now you can't directly replace a sub-expression, for doing that you need to pattern match directly on the free
 -- applicative, I might write a combinator for that at some point.
+
+-- Here are reasonable combinators for when dealing with precomposed monads
+-- We use map here, so we need to wait for the functor to 'compute' (think of it as, say, an IO monad)
+mapKeyLift :: Functor f => String -> (a -> a) -> Compose Labeled f a -> Compose Labeled f a
+mapKeyLift s = (Compose .) . (. getCompose) . mapKey s . fmap
+
+-- This just trashes the previous computation by inserting a new value with pure
+replaceKeyLift :: Applicative f => String -> a -> Compose Labeled f a -> Compose Labeled f a
+replaceKeyLift s = (Compose .) . (. getCompose) . replaceKey s . pure
+
+-- Utilities
+-- instance (Functor f, Num a) => Num (f a) where

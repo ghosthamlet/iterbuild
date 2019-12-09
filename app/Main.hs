@@ -14,25 +14,25 @@ import Data.Typeable
 -- More fine tuned ideas(like auto-naming of function parameters that can be refered to by specifying the function and then the param name)
 -- should probably be only be implemented after I have written some code in this language. There are probably ways to avoid boilerplate, because
 -- quick iteration is the name of the game here.
-finalString :: FreeA Labeled String
+finalString :: Expr String
 finalString = do
-        (++) <- Pure (++)
+        -- 1) introduce all named variables
         (+) <- label "operator" (+)
         cosmc <- label "cosmc" (3 :: Int)
         birthday <- label "birthday" 77
-        show <- expr show
         key <- label "api key" "2379ca13f24ae"
 
-        return $ key ++ show (cosmc + birthday)
+        -- 2) optionally introduce other operations
+        return $ (++) key (show (cosmc + birthday))
 
 -- compute the expression
 out = collapse finalString
 
 -- lets replace the cosmological constant, the api key and the mystery operation
 replacer :: Typeable a => Labeled a -> Labeled a
-replacer = replaceKey "cosmc" (+(1 :: Int)) -- add one to the cosmological constant
-    `also` replaceKey "api key" (const "23af23e3e4bc")
-    `also` replaceKey "operator" (const ((*) :: Int -> Int -> Int))
+replacer = mapKey "cosmc" (+(1 :: Int)) -- add one to the cosmological constant
+    `also` replaceKey "api key" "23af23e3e4bc"
+    `also` replaceKey "operator" ((*) :: Int -> Int -> Int)
     `also` id
 
 replacedExpr = replace replacer finalString

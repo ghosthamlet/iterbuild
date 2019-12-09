@@ -1,9 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE Rank2Types #-}
-{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# OPTIONS_GHC -Wno-simplifiable-class-constraints #-}
 module Capabilities where
 
@@ -28,47 +27,51 @@ data Env = Env {
 newtype BaseMonad a = BaseMonad { getBaseMonad :: ReaderT Env IO a }
     deriving (Functor, Applicative, Monad, MonadReader Env, MonadIO)
 
-newtype DefaultExpr a = ExprImpl { getExpr :: Compose (FreeA Labeled) BaseMonad a }
-    deriving (Functor, Applicative)
+newtype BaseExpr a = BaseExpr { getExpr :: Compose (FreeA Labeled) BaseMonad a }
+    deriving (Functor, Applicative, HasFileNamer, HasTargetPath, HasTargetWriter)
 
--- Here I list the capabilities I want the base monad to have, which will later be used
--- to define the "atoms" of my DSL. The cool thing is, that now the DSL typeclass has no access to
--- a general IO monad, only to these restricted functions. This is a typical haskell example of using
--- polymorphism to provide stronger guarantees about code and I find this extremely cool.
-class HasFileNamer m where
-    getFileNamer :: forall b. Hashable b => b -> m (String -> String)
--- This instance would have worked for any (Monad m, MonadReader Env m), but if I do that then I need
--- undecidable instances and I get warnings about fragile type checking later on
-instance MonadReader Env m => HasFileNamer m where
-    getFileNamer hashable = asks (`fileNamer` hashable)
+-- here are some generic sample implementations for tipical types
+getFileNamer :: MonadReader Env m => forall b. Hashable b => b -> m (String -> String)
+getFileNamer hashable = asks (`fileNamer` hashable)
 
-class HasTargetPath f where
-    getTargetPath :: f String
-instance MonadReader Env m => HasTargetPath m where
-    getTargetPath = asks targetPathConst
+getTargetPath :: MonadReader Env m => m String
+getTargetPath = asks targetPathConst
 
-class HasTargetWriter m where
-    -- first argument is the relative path to the target path and second one the contents
-    getTargetWriter :: FilePath -> String -> m ()
-instance (MonadIO m, HasTargetPath m) => HasTargetWriter m where
-    getTargetWriter pathSuffix contents = 
-        do
-            targetPath <- getTargetPath
-            liftIO $ writeFile contents (targetPath </> pathSuffix)
+-- first argument is the relative path to the target path and second one the contents
+getTargetWriter :: (MonadIO m, MonadReader Env m) => FilePath -> String -> m ()
+getTargetWriter pathSuffix contents = 
+    do
+        targetPath <- getTargetPath
+        liftIO $ writeFile contents (targetPath </> pathSuffix)
 
--- expression post-composed to monad, this toghether with constraints on the
--- capabilities of the monad m will be our 'polymorphic expression' with hidden IO
-type ExprM m = Compose Expr m
-
--- Lets define the atoms of our DSL!
-liftKleisli :: Monad m => (a -> m b) -> ExprM m a -> ExprM m b
+-- Lets define the atomic components of our applicative!
+liftKleisli :: Monad m => (a -> m b) -> Compose Expr m a -> Compose Expr m b
 liftKleisli f = Compose . fmap (>>= f) . getCompose
 
-nameFile :: (Monad m, HasFileNamer m, Hashable a) => ExprM m a -> ExprM m (String -> String)
-nameFile = liftKleisli getFileNamer
+-- The cool thing is, that now an applicative that has the capabilities below has no access to
+-- a general IO monad, only to these restricted functions. This is a typical haskell example of using
+-- polymorphism to provide stronger guarantees about code and I find this extremely cool.
+-- Also note that the polymorphic applicatives with the properties below, need not have anything to
+-- do with replaceable expressions - these are just an implementation detail.
+class HasFileNamer f where
+    -- f a -> f b is seriously much much easier to work with than f (a -> b). You want to forget you are
+    -- even applying an applicative in first place and pretend these are values.
+    nameFile :: Hashable a => f a -> f String -> f String
+instance MonadReader Env m => HasFileNamer (Compose Expr m) where
+    nameFile = (<*>) . liftKleisli getFileNamer
 
-targetPath :: (Monad m, HasTargetPath m) => ExprM m FilePath
-targetPath = Compose $ pure getTargetPath
+class HasTargetPath f where
+    targetPath :: f String
+instance MonadReader Env m => HasTargetPath (Compose Expr m) where
+    targetPath = Compose $ pure getTargetPath
 
-writeTarget :: (Monad m, HasTargetWriter m) => ExprM m (FilePath, String) -> ExprM m ()
-writeTarget = liftKleisli $ uncurry getTargetWriter
+-- unwrapTuple :: Functor f => f (a,b) -> (f a, f b)
+-- unwrapTuple x = (fst <$> x, snd <$> x)
+
+wrapTuple :: Applicative f => f a -> f b -> f (a,b)
+wrapTuple = (<*>) . fmap (curry id)
+
+class HasTargetWriter f where
+    writeTarget :: f FilePath -> f String -> f ()
+instance (MonadIO m, MonadReader Env m) => HasTargetWriter (Compose Expr m) where
+    writeTarget = curry (liftKleisli (uncurry getTargetWriter) . uncurry wrapTuple)
