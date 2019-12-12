@@ -47,6 +47,8 @@ getTargetWriter pathSuffix contents =
 -- Lets define the atomic components of our applicative!
 liftKleisli :: Monad m => (a -> m b) -> Compose Expr m a -> Compose Expr m b
 liftKleisli f = Compose . fmap (>>= f) . getCompose
+-- Note that this functions uses map, so it has no possibility of being replaced. This probably is fine,
+-- since the input expression will already be named.
 
 -- The cool thing is, that now an applicative that has the capabilities below has no access to
 -- a general IO monad, only to these restricted functions. This is a typical haskell example of using

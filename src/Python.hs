@@ -4,6 +4,7 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 module Python where
 
+import System.FilePath
 import GHC.Generics
 import Text.Printf
 import Data.String
@@ -24,17 +25,18 @@ data PyObject = PyObject { location :: PyModule, identifier :: String } deriving
 instance Hashable PyObject where
     hash obj = hash (location obj, identifier obj)
 
-genLines :: PyObject -> [PyObject] -> [(String, PyObject)] -> [String]
-genLines obj args kwargs  =
+genLines :: FilePath -> PyObject -> [PyObject] -> [(String, PyObject)] -> [String]
+genLines targetPath obj args kwargs  =
     let paramString =
             foldl (printf "%s, %s") "" $
                 (identifier <$> args) ++ ((\(k,v) -> printf "%s=%s" k (identifier v)) <$> kwargs)
     in let
         objects = args ++ (snd <$> kwargs)
+    in let
+        path = makeRelative targetPath (pyModule $ location obj)
     in
-        -- TODO: the location should be tweaked to make some arbitrary path relavive to target and then
-        -- use a general python-internal function that can import from any path.
-        ((\obj -> printf "from %s import %s" (pyModule $ location obj) (identifier obj)) <$> objects)
+        -- TODO: use a general python-internal function that can import from any path.
+        ((\obj -> printf "from %s import %s" path (identifier obj)) <$> objects)
             ++ [
                 "def run(data):",
                 printf "    return %s(%s)" (identifier obj) paramString
@@ -43,10 +45,11 @@ genLines obj args kwargs  =
 joinLines :: [String] -> String
 joinLines = foldl (printf "%s\n%s") ""
 
-namedApply :: (Applicative f, HasFileNamer f, HasTargetWriter f) => f PyObject -> f String -> f [PyObject] -> f [(String, PyObject)] -> f PyObject
+namedApply :: (Applicative f, HasTargetPath f, HasFileNamer f, HasTargetWriter f) => f PyObject -> f String -> f [PyObject] -> f [(String, PyObject)] -> f PyObject
 namedApply obj name args kwargs =
     let
-        code = joinLines <$> (genLines <$> obj <*> args <*> kwargs)
+        -- the map used here is fine since you wont replace the innards of this function
+        code = joinLines <$> liftE4 genLines targetPath obj args kwargs
     in let
         fileName = nameFile obj name
     in
@@ -57,7 +60,7 @@ namedApply obj name args kwargs =
     -- One can probably write non-effectfull functions easily for anything that implements 'String'/'Num'/'Bool' typeclasses,
     -- so that one always has functions of the form f a1 -> ... -> f an by default.
 
-apply :: (Applicative f, HasFileNamer f, HasTargetWriter f) => f PyObject -> f [PyObject] -> f [(String, PyObject)] -> f PyObject
+apply :: (Applicative f, HasTargetPath f, HasFileNamer f, HasTargetWriter f) => f PyObject -> f [PyObject] -> f [(String, PyObject)] -> f PyObject
 apply obj = namedApply obj (pure "")
 
 -- compose :: (Applicative f, HasFileNamer f, HasTargetWriter f) => f [PyObject] -> PyObject
