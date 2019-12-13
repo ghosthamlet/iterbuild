@@ -77,3 +77,6 @@ class HasTargetWriter f where
     writeTarget :: f FilePath -> f String -> f ()
 instance (MonadIO m, MonadReader Env m) => HasTargetWriter (Compose Expr m) where
     writeTarget = curry (liftKleisli (uncurry getTargetWriter) . uncurry wrapTuple)
+
+hashWrite :: (Applicative f, HasFileNamer f, HasTargetWriter f) => f FilePath -> f String -> f ()
+hashWrite path contents = writeTarget (nameFile path contents) contents

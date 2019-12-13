@@ -11,6 +11,7 @@ import Data.String
 import Data.Hashable
 import Control.Monad.Reader
 import Control.Applicative
+import Control.Arrow
 import Capabilities
 import Expr
 
@@ -25,22 +26,37 @@ data PyObject = PyObject { location :: PyModule, identifier :: String } deriving
 instance Hashable PyObject where
     hash obj = hash (location obj, identifier obj)
 
+getObjectRef :: PyObject -> String
+getObjectRef = uncurry (printf "modules[%s].%s") . (dropExtension . takeFileName . pyModule . location &&& identifier)
+
 genLines :: FilePath -> PyObject -> [PyObject] -> [(String, PyObject)] -> [String]
 genLines targetPath obj args kwargs  =
     let paramString =
             foldl (printf "%s, %s") "" $
-                (identifier <$> args) ++ ((\(k,v) -> printf "%s=%s" k (identifier v)) <$> kwargs)
+                (getObjectRef <$> args) ++ (uncurry (printf "%s=%s") . second getObjectRef <$> kwargs)
     in let
-        objects = args ++ (snd <$> kwargs)
-    in let
-        path = makeRelative targetPath (pyModule $ location obj)
+        objects = args ++ (snd <$> kwargs) ++ [obj]
     in
         -- TODO: use a general python-internal function that can import from any path.
-        ((\obj -> printf "from %s import %s" path (identifier obj)) <$> objects)
-            ++ [
-                "def run(data):",
-                printf "    return %s(%s)" (identifier obj) paramString
-            ]
+        [
+            "import importlib.util",
+            "",
+            "l = ["
+        ] ++ (uncurry (printf "(%s,%s),") -- these are the tuples we want to import
+                . (dropExtension . takeFileName &&& makeRelative targetPath)
+                . pyModule
+                . location
+                <$> objects)
+        ++ [
+            "]",
+            "modules = {}",
+            "for mname, mpath in l:",
+            "    spec = importlib.util.spec_from_file_location(mname, mpath)",
+            "    modules[mname] = importlib.util.module_from_spec(spec)",
+            "    spec.loader.exec_module(modules[mname])",
+            "def run(data):",
+            printf "    return %s(%s)" (getObjectRef obj) paramString
+        ]
 
 joinLines :: [String] -> String
 joinLines = foldl (printf "%s\n%s") ""
@@ -63,4 +79,17 @@ namedApply obj name args kwargs =
 apply :: (Applicative f, HasTargetPath f, HasFileNamer f, HasTargetWriter f) => f PyObject -> f [PyObject] -> f [(String, PyObject)] -> f PyObject
 apply obj = namedApply obj (pure "")
 
--- compose :: (Applicative f, HasFileNamer f, HasTargetWriter f) => f [PyObject] -> PyObject
+composition :: (Applicative f, HasFileNamer f, HasTargetWriter f) => f PyObject
+composition =
+    let code = joinLines [
+            "def compose(functions):",
+            "    if functions == []:",
+            "        return lambda x: x",
+            "    else:",
+            "        return lambda x: compose(functions[1:])(functions[0](x))" ]
+    in let
+        fileName = nameFile (pure code) (pure "compose")
+    in 
+        writeTarget fileName (pure code)
+        *> ((\fname -> PyObject { location=PyModule fname, identifier="compose" }) <$> fileName)
+
