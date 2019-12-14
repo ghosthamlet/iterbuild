@@ -20,13 +20,18 @@ extra-source-files:
 description:         Please see the README on GitHub at <https://github.com/githubuser/iterbuild#readme>
 
 dependencies:
-- base >= 4.7 && < 5
-- template-haskell
+- base
+- protolude
+- directory
 - filepath
-- hashable
+- text
+- path
+- formatting
+- exceptions
+
 - syb
-- mtl
 - turtle
+- template-haskell
 
 library:
   source-dirs: src
@@ -52,3 +57,6 @@ tests:
     - -with-rtsopts=-N
     dependencies:
     - iterbuild
+
+default-extensions:
+  NoImplicitPrelude

@@ -1,82 +1,85 @@
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# OPTIONS_GHC -Wno-simplifiable-class-constraints #-}
+{-# LANGUAGE UndecidableInstances #-}
 module Capabilities where
 
-import System.FilePath
-import Data.Hashable
+import Path
+import Protolude hiding (writeFile)
+import System.Directory
+import System.FilePath (combine)
+import Data.Text.Lazy.IO
+import Formatting
 import Data.Functor.Compose
-import Data.Functor.Identity
-import Control.Monad.Reader
-import Turtle (mkdir, output)
+import Control.Monad.Catch
 import Expr
 
-script :: IO ()
-script = do
-    mkdir "test"
-    output "test/file.txt" "Hello"
-
-data Env = Env {
-    fileNamer :: forall b. Hashable b => b -> String -> String,
-    targetPathConst :: FilePath
-}
-
-newtype BaseMonad a = BaseMonad { getBaseMonad :: ReaderT Env IO a }
-    deriving (Functor, Applicative, Monad, MonadReader Env, MonadIO)
-
-newtype BaseExpr a = BaseExpr { getExpr :: Compose (FreeA Labeled) BaseMonad a }
-    deriving (Functor, Applicative, HasFileNamer, HasTargetPath, HasTargetWriter)
-
--- here are some generic sample implementations for tipical types
-getFileNamer :: MonadReader Env m => forall b. Hashable b => b -> m (String -> String)
-getFileNamer hashable = asks (`fileNamer` hashable)
-
-getTargetPath :: MonadReader Env m => m String
-getTargetPath = asks targetPathConst
-
--- first argument is the relative path to the target path and second one the contents
-getTargetWriter :: (MonadIO m, MonadReader Env m) => FilePath -> String -> m ()
-getTargetWriter pathSuffix contents = 
-    do
-        targetPath <- getTargetPath
-        liftIO $ writeFile contents (targetPath </> pathSuffix)
-
--- Lets define the atomic components of our applicative!
-liftKleisli :: Monad m => (a -> m b) -> Compose Expr m a -> Compose Expr m b
-liftKleisli f = Compose . fmap (>>= f) . getCompose
--- Note that this functions uses map, so it has no possibility of being replaced. This probably is fine,
--- since the input expression will already be named.
 
 -- The cool thing is, that now an applicative that has the capabilities below has no access to
 -- a general IO monad, only to these restricted functions. This is a typical haskell example of using
--- polymorphism to provide stronger guarantees about code and I find this extremely cool.
--- Also note that the polymorphic applicatives with the properties below, need not have anything to
--- do with replaceable expressions - these are just an implementation detail.
-class HasFileNamer f where
-    -- f a -> f b is seriously much much easier to work with than f (a -> b). You want to forget you are
-    -- even applying an applicative in first place and pretend these are values.
-    nameFile :: Hashable a => f a -> f String -> f String
-instance MonadReader Env m => HasFileNamer (Compose Expr m) where
-    nameFile = (<*>) . liftKleisli getFileNamer
-
+-- polymorphism to provide stronger guarantees about code and I find this extremely cool
 class HasTargetPath f where
-    targetPath :: f String
-instance MonadReader Env m => HasTargetPath (Compose Expr m) where
-    targetPath = Compose $ pure getTargetPath
+    targetPath :: f (Path Abs Dir)
+    -- Given an optional label and some text you want to just add to the targetPath,
+    -- this just hashes the text and somehow embedds that information into the path. The resulting
+    -- filename returned. It also checks whether the file exists first. This is mainly used by
+    -- very common snippets that are used for glueing code snippets and don't need to be stored
+    -- in a git repository.
 
--- unwrapTuple :: Functor f => f (a,b) -> (f a, f b)
--- unwrapTuple x = (fst <$> x, snd <$> x)
+    -- At some later point, I might add 'ressource dirs', where the user can
+    -- define such gluing snippets and refer to them later, but for now this is sufficient since this
+    -- would mean that I need to isolate a 'naming function' that then gets used by addContent and the
+    -- new function, though I will probably be able to keep this type-class interface so I am fine.
 
-wrapTuple :: Applicative f => f a -> f b -> f (a,b)
-wrapTuple = (<*>) . fmap (curry id)
+    -- Guideline: Write your code such that files that are used often are named uniformly by hardcoding
+    -- the labels into the code.
 
-class HasTargetWriter f where
-    writeTarget :: f FilePath -> f String -> f ()
-instance (MonadIO m, MonadReader Env m) => HasTargetWriter (Compose Expr m) where
-    writeTarget = curry (liftKleisli (uncurry getTargetWriter) . uncurry wrapTuple)
+    -- I think it makes sense to use a maybe here as opposed to 2 different functions, because as I wrote more code,
+    -- it got very painful having to always write an extra function.
+    addContent :: f (Maybe LText) -> f LText -> f (Path Rel File)
 
-hashWrite :: (Applicative f, HasFileNamer f, HasTargetWriter f) => f FilePath -> f String -> f ()
-hashWrite path contents = writeTarget (nameFile path contents) contents
+class HasTargetPath f => HasGit f where
+
+data Env = Env {
+    getTargetPath :: Path Abs Dir,
+
+    getGitRepoPath :: Path Abs Dir,
+    getGitPath :: Path Abs File,
+
+    getDvcPath :: Path Abs File,
+    getDvcCache :: Path Abs Dir,
+
+    getResultPath :: Path Abs Dir
+}
+
+newtype BaseMonad a = BaseMonad { getBaseMonad :: ReaderT Env IO a }
+    deriving (Functor, Applicative, Monad, MonadReader Env, MonadIO, MonadThrow)
+
+nameFile :: Hashable a => Maybe LText -> a -> LText
+nameFile Nothing = format hex . hash
+nameFile (Just text) = ((<>) text) . nameFile Nothing
+
+instance (MonadIO m, MonadThrow m, MonadReader Env m) => HasTargetPath m where
+    targetPath = asks getTargetPath
+    addContent label content =
+        do
+            label <- label
+            content <- content
+            let name = nameFile label content
+            targetPath <- targetPath
+            let path = toFilePath targetPath ++ (toS name)
+            
+            exists <- (liftIO . doesFileExist) path
+            bool (liftIO $ writeFile path content) (pure ()) exists
+            parseRelFile (toS name)
+
+-- What the fuck, why do I need to write this trivial code? There surely is a better
+-- way to do this, but with the :.: operator, I can't get some code to compile which
+-- compiles if you manually compose.
+instance Applicative f => HasTargetPath (Compose f BaseMonad) where
+    targetPath = Compose $ pure targetPath
+    addContent x y = Compose $ liftA2 addContent (getCompose x) (getCompose y)
+-- Note that this function uses map implicitly in liftA2, so it has no possibility of being replaced. This probably is fine,
+-- since the input expression will already be named.
