@@ -1,17 +1,17 @@
 {-# LANGUAGE ApplicativeDo #-}
 {-# LANGUAGE OverloadedStrings #-}
+-- Extended default rules is quite nice because it uses the required typeable constraint
+-- required by 'label' and 'also', and casts everything down to a default like String or
+-- Int. Of course, is sucks that I can't use LText, but that could theoretically be arranged
+-- by constraining the Expression types even further and not include String.
+{-# LANGUAGE ExtendedDefaultRules #-}
 module Main where
 
 import Protolude
 import Expr
 import Data.Typeable
-import Turtle (mkdir, output)
+import Data.String
 
-
--- script :: IO ()
--- script = do
---     mkdir "test"
---     output "test/file.txt" "Hello"
 
 -- lets define some nonsense - this definetly looks better than the code I had without do notation. Here the structure of the program is instantly clear by
 -- looking at the last line and while it now occupies many more lines than earlier, the following simple rules of thumb emerge:
@@ -21,11 +21,15 @@ import Turtle (mkdir, output)
 -- More fine tuned ideas(like auto-naming of function parameters that can be refered to by specifying the function and then the param name)
 -- should probably be only be implemented after I have written some code in this language. There are probably ways to avoid boilerplate, because
 -- quick iteration is the name of the game here.
-finalString :: Expr LText
+
+-- Inspecting an expression's tree and giving the user hashes for each replaceable component in a command line utility, might be a good idea. Because
+-- our goal is to reduce as much explicit variable naming. The other option is that the developer goes back to previous code and modifies the variable
+-- names, and then iterbuild can check whether the code is the same as the one for an old saved run by computing a hash.
+finalString :: Expr String
 finalString = do
         -- 1) introduce all named variables
         (+) <- label "operator" (+)
-        cosmc <- label "cosmc" (3 :: Int)
+        cosmc <- label "cosmc" 3
         birthday <- label "birthday" 77
         key <- label "api key" "2379ca13f24ae"
 
@@ -36,9 +40,9 @@ finalString = do
 out = collapse finalString
 
 replacer :: Typeable a => Labeled a -> Labeled a
-replacer = mapKey "cosmc" (+(1 :: Int)) -- add one to the cosmological constant
-    `also` replaceKey "api key" ("23af23e3e4bc" :: LText)
-    `also` replaceKey "operator" ((*) :: Int -> Int -> Int)
+replacer = mapKey "cosmc" (+1) -- add one to the cosmological constant
+    `also` replaceKey "api key" "23af23e3e4bc"
+    `also` replaceKey "operator" (*)
     `also` identity
 
 replacedExpr = replaceE replacer finalString

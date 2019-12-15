@@ -43,18 +43,12 @@ genLines obj args kwargs  =
 
 -- args: file label, function name, contents
 makeObject :: (Applicative f, HasTargetPath f) => f (Maybe LText) -> f LText -> f LText -> f PyObject
-makeObject label funName = (liftA2 (flip (\fPath -> PyObject (PyModule fPath))) funName) . addContent label
+makeObject label funName = (liftA2 (flip (\fPath -> PyObject $ PyModule fPath)) funName) . addContent label (pure . Just $ "py")
 
 -- This should probably be written as a polyvariadic function, like printf "%s".
-apply_ :: (Applicative f, HasTargetPath f) => f (Maybe LText) -> f PyObject -> f [PyObject] -> f [(LText, PyObject)] -> f PyObject
-apply_ label = (((makeObject label (pure "run") . fmap unlines).).) . liftE3 genLines
-
-
 apply :: (Applicative f, HasTargetPath f) => f PyObject -> f [PyObject] -> f [(LText, PyObject)] -> f PyObject
-apply = apply_ (pure Nothing)
+apply = (((makeObject (pure . Just $ "apply") (pure "run") . fmap unlines).).) . liftE3 genLines
 
-labelApply :: (Applicative f, HasTargetPath f) => f LText -> f PyObject -> f [PyObject] -> f [(LText, PyObject)] -> f PyObject
-labelApply l = apply_ (Just <$> l)
 
 composition :: (Applicative f, HasTargetPath f) => f PyObject
 composition =

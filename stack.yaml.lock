@@ -3,7 +3,14 @@
 # For more information, please see the documentation at:
 #   https://docs.haskellstack.org/en/stable/lock_files
 
-packages: []
+packages:
+- completed:
+    hackage: shelly-1.9.0@sha256:ee030e939e2e5367cf33923c1b9e20bd0793667b02f4baf3d6224984b9b94720,5298
+    pantry-tree:
+      size: 2314
+      sha256: 03feb7c21cd302e6f398cad3f33437dbcbedad52c255d7032903f03fbbab8065
+  original:
+    hackage: shelly-1.9.0
 snapshots:
 - completed:
     size: 525662
