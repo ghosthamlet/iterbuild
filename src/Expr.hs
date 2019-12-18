@@ -34,7 +34,7 @@ instance Applicative (FreeA f) where
 expr :: Typeable a => a -> Expr a
 expr x = Apply (return x) (Pure identity)
 
--- We want to lift functions like follows, in order to apply the arguments only "formally" and preserve the expression structure.
+-- We want lift the functions with pure first, so the functions are replaceable
 liftE :: Applicative f => (a -> b) -> f a -> f b
 liftE f x = pure f <*> x
 
@@ -49,6 +49,7 @@ liftE4 f x y z a = liftE3 f x y z <*> a
 -- one may be able to build a polyvariadic function, so the user does not have to know the number of arguments (this code is
 -- just plain retarded anyways)
 
+-- This is literally the lifting operation for the adjunction.
 runAp :: Applicative g => (forall x. Typeable x => f x -> g x) -> FreeA f a -> g a
 runAp _ (Pure x) = pure x
 runAp u (Apply f x) = flip identity <$> u f <*> runAp u x

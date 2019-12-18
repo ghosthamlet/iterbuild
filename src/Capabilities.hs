@@ -20,10 +20,10 @@ import Control.Monad.Catch
 
 import Expr
 
+-- These are the first 2 layers of my 3 layer cake https://www.parsonsmatt.org/2018/03/22/three_layer_haskell_cake.html
+-- The amount of classes here should be minimized, as it is tiresome to write that code. I love just how
+-- you can use polymorphism to dump all your 'imperative' code(layer 1) into one file and then just forget about it.
 
--- The cool thing is, that now an applicative that has the capabilities below has no access to
--- a general IO monad, only to these restricted functions. This is a typical haskell example of using
--- polymorphism to provide stronger guarantees about code and I find this extremely cool
 class HasTargetPath f where
     targetPath :: f (Path Abs Dir)
     -- Args: optional label, optional file extension, contents
@@ -49,13 +49,18 @@ type GitRef = LText
 
 class HasTargetPath f => HasGit f where
     gitRepoPath :: f (Path Abs Dir)
-    fetchCommitish :: f LText -> f (Path Rel Dir)
+    -- This should really only be a commit to ensure reproducibility and thus enable having clear hashes for computations.
+    -- This means I can check whether a python object has been pre-computed and then possibly provide the python object
+    -- from cache. (i.e. pass an argument like read_cache("4f23ea32ef534e") that outputs a pandas object by reading from cache.)
+    fetchCommit :: f LText -> f (Path Rel Dir)
 
+class HasCache f where
+    cachePath :: f (Path Abs Dir)
 
 data Env = Env {
     getTargetPath :: Path Abs Dir,
     getGitRepoPath :: Path Abs Dir,
-    getDvcCache :: Path Abs Dir,
+    getCachePath :: Path Abs Dir,
     getResultPath :: Path Abs Dir
 }
 
@@ -69,7 +74,9 @@ nameFile label extension =
     . format hex
     . hash
 
-instance (MonadIO m, MonadThrow m, MonadReader Env m) => HasTargetPath m where
+-- The more general version causes overlapping instances later on.
+-- instance (MonadIO m, MonadThrow m, MonadReader Env m) => HasTargetPath m where
+instance HasTargetPath BaseMonad where
     targetPath = asks getTargetPath
     addContent label extension content =
         do
@@ -85,17 +92,20 @@ instance (MonadIO m, MonadThrow m, MonadReader Env m) => HasTargetPath m where
             parseRelFile (toS name)
 
 
-instance (MonadIO m, MonadReader Env m, MonadThrow m) => HasGit m where
+-- instance (MonadIO m, MonadThrow m, MonadReader Env m) => HasGit m where
+instance HasGit BaseMonad where
     gitRepoPath = asks getGitRepoPath
-    fetchCommitish commitish =
+    fetchCommit commit =
+        -- check for existence?
         do
-            commitish <- commitish
-            pathEnd <- parseRelDir (toS commitish)
+            commit <- commit
+            pathEnd <- parseRelDir (toS commit)
             writePath <- (</> pathEnd) <$> targetPath
-            shelly $ escaping False $ run_ "git" ["archive", toS commitish, "| tar -x -C", toS $ toFilePath writePath]
+            shelly $ escaping False $ run "git" ["archive", toS commit, "| tar -x -C", "git-" <> (toS $ toFilePath writePath)]
             return pathEnd
 
-
+instance HasCache BaseMonad where
+    cachePath = asks getCachePath
 
 -- What the fuck, why do I need to write this trivial code? There surely is a better
 -- way to do this, but with the :.: operator, I can't get some code to compile which
@@ -105,3 +115,7 @@ instance Applicative f => HasTargetPath (Compose f BaseMonad) where
     addContent x y z = Compose $ liftA3 addContent (getCompose x) (getCompose y) (getCompose z)
 -- Note that this function uses map implicitly in liftA2, so it has no possibility of being replaced. This probably is fine,
 -- since the input expression will already be named.
+
+instance Applicative f => HasGit (Compose f BaseMonad) where
+    gitRepoPath = Compose $ pure gitRepoPath
+    fetchCommit = Compose . fmap fetchCommit . getCompose
