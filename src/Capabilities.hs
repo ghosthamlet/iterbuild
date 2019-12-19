@@ -7,7 +7,7 @@
 {-# LANGUAGE ExtendedDefaultRules #-}
 module Capabilities where
 
-import Protolude hiding (writeFile, (%))
+import Protolude hiding (writeFile, readFile, (%))
 import System.Directory
 import System.FilePath (combine)
 import Path
@@ -56,6 +56,9 @@ class HasTargetPath f => HasGit f where
 
 class HasCache f where
     cachePath :: f (Path Abs Dir)
+    -- Use for incorporating external data sources into the cache. This should move data from somewhere,
+    -- rename it and put it into the cache.
+    importLocalFile :: f (Path Abs File) -> f (Path Rel File)
 
 data Env = Env {
     getTargetPath :: Path Abs Dir,
@@ -106,6 +109,17 @@ instance HasGit BaseMonad where
 
 instance HasCache BaseMonad where
     cachePath = asks getCachePath
+    importLocalFile fileDir =
+        do
+            sourceDir <- fileDir
+            targetName <- setFileExtension "" . filename $ sourceDir
+            contents <- liftIO . readFile . toFilePath $ sourceDir
+            let fName = nameFile (Just . toS . toFilePath $ targetName) (Just . toS . fileExtension $ sourceDir) contents
+
+            cachePath <- cachePath
+            liftIO (renameFile (toFilePath sourceDir) (combine (toFilePath cachePath) (toS fName)))
+            parseRelFile . toS $ fName
+
 
 -- What the fuck, why do I need to write this trivial code? There surely is a better
 -- way to do this, but with the :.: operator, I can't get some code to compile which
