@@ -56,9 +56,8 @@ class HasTargetPath f => HasGit f where
 
 class HasCache f where
     cachePath :: f (Path Abs Dir)
-    -- Use for incorporating external data sources into the cache. This should move data from somewhere,
-    -- rename it and put it into the cache.
-    importLocalFile :: f (Path Abs File) -> f (Path Rel File)
+    -- downloads competition data if provided a competition name
+    downloadKaggle :: f LText -> f (Path Rel Dir)
 
 data Env = Env {
     getTargetPath :: Path Abs Dir,
@@ -109,16 +108,28 @@ instance HasGit BaseMonad where
 
 instance HasCache BaseMonad where
     cachePath = asks getCachePath
-    importLocalFile fileDir =
+    -- it is quite unfortunate that kaggle provides no checksums
+    -- OHH but it apparently checks whether the data was already downloadeded, so I could maybe write directly into cache.
+    downloadKaggle competition =
         do
-            sourceDir <- fileDir
-            targetName <- setFileExtension "" . filename $ sourceDir
-            contents <- liftIO . readFile . toFilePath $ sourceDir
-            let fName = nameFile (Just . toS . toFilePath $ targetName) (Just . toS . fileExtension $ sourceDir) contents
-
+            dir <- fmap ((++ "/") . toS) competition
             cachePath <- cachePath
-            liftIO (renameFile (toFilePath sourceDir) (combine (toFilePath cachePath) (toS fName)))
-            parseRelFile . toS $ fName
+            shelly $ run "kaggle" ["competitions", "download", "-c", toS dir, "-p", "/tmp/"]
+
+            liftIO $ renameDirectory (combine "/tmp" dir) (combine (toFilePath cachePath) dir)
+            parseRelDir dir
+
+
+importLocalFile fileDir =
+    do
+        sourceDir <- fileDir
+        targetName <- setFileExtension "" . filename $ sourceDir
+        contents <- liftIO . readFile . toFilePath $ sourceDir
+        let fName = nameFile (Just . toS . toFilePath $ targetName) (Just . toS . fileExtension $ sourceDir) contents
+
+        cachePath <- cachePath
+        liftIO (renameFile (toFilePath sourceDir) (combine (toFilePath cachePath) (toS fName)))
+        parseRelFile . toS $ fName
 
 
 -- What the fuck, why do I need to write this trivial code? There surely is a better
