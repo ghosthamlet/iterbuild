@@ -1,0 +1,75 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.33.0.
+--
+-- see: https://github.com/sol/hpack
+--
+-- hash: b1d0c90d22fc2eb0af689394f4a6bd084f2c3cc3f2ce66ccf0a1b7cfe02cc16c
+
+name:           iterbuild
+version:        0.1.0.0
+description:    Please see the README on GitLab at <https://gitlab.com/adrianmarti/iterbuild#readme>
+homepage:       https://github.com/githubuser/iterbuild#readme
+bug-reports:    https://github.com/githubuser/iterbuild/issues
+author:         Adrian Marti
+maintainer:     example@example.com
+copyright:      2019 Adrian Marti
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    ChangeLog.md
+
+source-repository head
+  type: git
+  location: https://github.com/githubuser/iterbuild
+
+library
+  exposed-modules:
+      Capabilities
+      Expr
+      Lib
+      Python
+  other-modules:
+      Paths_iterbuild
+  hs-source-dirs:
+      src
+  default-extensions: NoImplicitPrelude
+  build-depends:
+      base >=4.7 && <5
+    , directory
+    , exceptions
+    , filepath
+    , formatting
+    , path
+    , protolude
+    , shelly
+    , syb
+    , template-haskell
+    , text
+  default-language: Haskell2010
+
+test-suite iterbuild-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_iterbuild
+  hs-source-dirs:
+      test
+  default-extensions: NoImplicitPrelude
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , directory
+    , exceptions
+    , filepath
+    , formatting
+    , iterbuild
+    , path
+    , protolude
+    , shelly
+    , syb
+    , template-haskell
+    , text
+  default-language: Haskell2010

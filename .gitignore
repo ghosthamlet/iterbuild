@@ -1,6 +1,5 @@
 .stack-work/
-iterbuild.cabal
 *~
 .ionide
 .vscode
-*.lock
+result/
