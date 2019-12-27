@@ -12,8 +12,9 @@ import System.Directory
 import System.FilePath (combine)
 import Path
 import Formatting
-import Shelly hiding ((</>))
+import Shelly (shelly, escaping, run)
 
+import Data.Text.Lazy (splitOn)
 import Data.Text.Lazy.IO
 import Data.Functor.Compose
 import Control.Monad.Catch
@@ -56,8 +57,7 @@ class HasTargetPath f => HasGit f where
 
 class HasCache f where
     cachePath :: f (Path Abs Dir)
-    -- downloads competition data if provided a competition name
-    downloadKaggle :: f LText -> f (Path Rel Dir)
+    downloadKaggle :: f LText -> f ()
 
 data Env = Env {
     getTargetPath :: Path Abs Dir,
@@ -87,7 +87,7 @@ instance HasTargetPath BaseMonad where
             content <- content
             let name = nameFile label extension content
             targetPath <- targetPath
-            let path = toFilePath targetPath ++ (toS name)
+            let path = toFilePath targetPath ++ toS name
             
             exists <- (liftIO . doesFileExist) path
             bool (liftIO $ writeFile path content) (pure ()) exists
@@ -103,23 +103,12 @@ instance HasGit BaseMonad where
             commit <- commit
             pathEnd <- parseRelDir (toS commit)
             writePath <- (</> pathEnd) <$> targetPath
-            shelly $ escaping False $ run "git" ["archive", toS commit, "| tar -x -C", "git-" <> (toS $ toFilePath writePath)]
+            shelly $ escaping False $ run "git" ["archive", toS commit, "| tar -x -C", "git-" <> toS (toFilePath writePath)]
             return pathEnd
 
-instance HasCache BaseMonad where
-    cachePath = asks getCachePath
-    -- it is quite unfortunate that kaggle provides no checksums
-    -- OHH but it apparently checks whether the data was already downloadeded, so I could maybe write directly into cache.
-    downloadKaggle competition =
-        do
-            dir <- fmap ((++ "/") . toS) competition
-            cachePath <- cachePath
-            shelly $ run "kaggle" ["competitions", "download", "-c", toS dir, "-p", "/tmp/"]
-
-            liftIO $ renameDirectory (combine "/tmp" dir) (combine (toFilePath cachePath) dir)
-            parseRelDir dir
-
-
+-- Puts an external file, whose hash is yet unknown into the local database. It does not return the path where
+-- it is put into to force the user to explicitly lookup the hash to ensure reproducibility. 
+importLocalFile :: BaseMonad (Path Abs File) -> BaseMonad ()
 importLocalFile fileDir =
     do
         sourceDir <- fileDir
@@ -129,7 +118,41 @@ importLocalFile fileDir =
 
         cachePath <- cachePath
         liftIO (renameFile (toFilePath sourceDir) (combine (toFilePath cachePath) (toS fName)))
-        parseRelFile . toS $ fName
+        print fName
+
+newtype CacheLookupException = CacheLookupException { key :: LText} deriving (Show)
+
+instance Exception CacheLookupException
+
+-- This is used when you want to guarantee your data having some hash like when the data was imported with
+-- importLocalFile. This is a nice solution for dealing with outside data and still having reproducibility
+-- guarantees.
+lookupHash :: BaseMonad LText -> BaseMonad (Path Rel File)
+lookupHash hash =
+    do
+        cachePath <- cachePath
+        hash <- hash
+        filePaths <- fmap (fmap toS) . liftIO . listDirectory . toFilePath $ cachePath
+        filepath <- case find ((== Just hash) . head . splitOn "-") filePaths of
+            Just x -> return x
+            Nothing -> throwM (CacheLookupException hash)
+        parseRelFile (toS filepath)
+
+
+instance HasCache BaseMonad where
+    cachePath = asks getCachePath
+    -- it is quite unfortunate that kaggle provides no checksums
+    -- OHH but it apparently checks whether the data was already downloadeded, so I could maybe write directly into cache.
+    downloadKaggle competition =
+        do
+            competition <- competition
+            shelly $ run "kaggle" ["competitions", "download", "-c", toS competition, "-p", "/tmp/"]
+
+            let dir = ((++ "/") . toS) competition
+            cachePath <- cachePath
+
+            liftIO $ renameDirectory (combine "/tmp" dir) (combine (toFilePath cachePath) dir)
+            importLocalFile (parseAbsFile $ combine "/tmp" (toS competition))
 
 
 -- What the fuck, why do I need to write this trivial code? There surely is a better
