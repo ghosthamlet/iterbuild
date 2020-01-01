@@ -69,6 +69,17 @@ data Env = Env {
 newtype BaseMonad a = BaseMonad { getBaseMonad :: ReaderT Env IO a }
     deriving (Functor, Applicative, Monad, MonadReader Env, MonadIO, MonadThrow)
 
+setDefaultPaths :: BaseMonad a -> IO a
+setDefaultPaths b =
+    do
+        currentDir <- getCurrentDirectory
+        env <- Env
+                <$> parseAbsDir (combine currentDir "target/")
+                <*> parseAbsDir (combine currentDir ".git/")
+                <*> parseAbsDir (combine currentDir "cache/")
+                <*> parseAbsDir (combine currentDir "results/")
+        runReaderT (getBaseMonad b) env
+
 nameFile :: Hashable a => Maybe LText -> Maybe LText -> a -> LText
 nameFile label extension =
     maybe identity (flip $ format $ text % "." % text) extension
@@ -108,7 +119,7 @@ instance HasGit BaseMonad where
 
 -- Puts an external file, whose hash is yet unknown into the local database. It does not return the path where
 -- it is put into to force the user to explicitly lookup the hash to ensure reproducibility. 
-importLocalFile :: BaseMonad (Path Abs File) -> BaseMonad ()
+importLocalFile :: BaseMonad (Path a File) -> BaseMonad ()
 importLocalFile fileDir =
     do
         sourceDir <- fileDir
@@ -147,7 +158,7 @@ instance HasCache BaseMonad where
         do
             competition <- competition
             shelly $ run "kaggle" ["competitions", "download", "-c", toS competition, "-p", "/tmp/"]
-
+            -- TODO: extract
             let dir = ((++ "/") . toS) competition
             cachePath <- cachePath
 
