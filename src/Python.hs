@@ -51,7 +51,7 @@ cachedApplyCode cachePath obj args kwargs  =
     in let
         objects = args ++ (snd <$> kwargs) ++ [obj]
     in let
-        objCachePath = toFilePath cachePath </> (toS . format hex . hash . concatMap (toFilePath . pyModule . location) $ objects)
+        objCachePath = toFilePath cachePath </> (toS . format (base 36) . hash . concatMap (toFilePath . pyModule . location) $ objects)
     in
         (uncurry (format ("from " % text % " import " % text))
                 . (toImportPath . location &&& identifier)

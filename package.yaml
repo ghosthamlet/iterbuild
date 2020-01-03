@@ -24,6 +24,9 @@ dependencies:
 - protolude
 - directory
 - filepath
+- temporary
+- directory-tree
+- cryptonite
 - text
 - path
 - formatting

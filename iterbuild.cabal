@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: b1d0c90d22fc2eb0af689394f4a6bd084f2c3cc3f2ce66ccf0a1b7cfe02cc16c
+-- hash: 48671a87ee2f36c0303a56c4f763293b5ec2b7c4eac9bef801e7a52aff869443
 
 name:           iterbuild
 version:        0.1.0.0
@@ -38,7 +38,9 @@ library
   default-extensions: NoImplicitPrelude
   build-depends:
       base >=4.7 && <5
+    , cryptonite
     , directory
+    , directory-tree
     , exceptions
     , filepath
     , formatting
@@ -47,6 +49,7 @@ library
     , shelly
     , syb
     , template-haskell
+    , temporary
     , text
   default-language: Haskell2010
 
@@ -61,7 +64,9 @@ test-suite iterbuild-test
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
+    , cryptonite
     , directory
+    , directory-tree
     , exceptions
     , filepath
     , formatting
@@ -71,5 +76,6 @@ test-suite iterbuild-test
     , shelly
     , syb
     , template-haskell
+    , temporary
     , text
   default-language: Haskell2010
