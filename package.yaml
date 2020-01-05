@@ -22,19 +22,17 @@ description:         Please see the README on GitLab at <https://gitlab.com/adri
 dependencies:
 - base >= 4.7 && < 5
 - protolude
-- directory
 - filepath
-- temporary
-- directory-tree
+- bytestring
 - cryptonite
 - text
 - path
+- path-io
 - formatting
 - exceptions
 - shelly
 
 - syb
-- template-haskell
 
 library:
   source-dirs: src

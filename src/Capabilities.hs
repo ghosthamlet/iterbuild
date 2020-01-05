@@ -1,5 +1,3 @@
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -9,44 +7,22 @@
 {-# LANGUAGE ExtendedDefaultRules #-}
 module Capabilities where
 
-import Protolude hiding (writeFile, readFile, (%))
-import System.Directory
-import System.Directory.Tree
-import System.FilePath (combine, addExtension)
+import Protolude hiding (writeFile, readFile, (%), hash, take, first)
+import System.FilePath (combine, addExtension, makeRelative)
 import qualified System.IO
-import System.IO.Temp
+import Crypto.Hash (Context, Digest, SHA256, hash, hashInit, hashUpdate, hashFinalize)
 import Path
+import qualified Path.IO as PIO
 import Formatting hiding (build)
 import Shelly hiding ((</>), find)
 
-import Data.Text.Lazy (splitOn)
-import Data.Text.Lazy.IO
+import Data.Text.Lazy (splitOn, take, dropEnd)
+import qualified Data.ByteString as B
 import Data.Functor.Compose
 import Control.Monad.Catch
+import Control.Arrow
 
 import Expr
-
--- We will a function for hashing directories in the format of the directory-tree library
- -- The following function is copied from https://github.com/jberryman/directory-tree
- -- HELPER: a non-recursive comparison
-comparingConstr :: DirTree a -> DirTree a1 -> Ordering
-comparingConstr (Failed _ _) (Dir _ _)    = LT
-comparingConstr (Failed _ _) (File _ _)   = LT
-comparingConstr (File _ _) (Failed _ _)   = GT
-comparingConstr (File _ _) (Dir _ _)      = GT
-comparingConstr (Dir _ _)    (Failed _ _) = GT
-comparingConstr (Dir _ _)    (File _ _)   = LT
- -- else compare on the names of constructors that are the same, without
- -- looking at the contents of Dir constructors:
-comparingConstr t t'  = compare (name t) (name t')
-
--- We want to sort the keys in a reasonable fashion before hashing the tree.
-deriving instance Generic a => Generic (DirTree a)
-instance (Generic a, Hashable a) => Hashable (DirTree a) where
-    hashWithSalt salt (File name contents) = hashWithSalt salt (name, contents)
-    hashWithSalt salt (Dir name files) = hashWithSalt salt (name, sortBy comparingConstr files)
-    hashWithSalt salt (Failed name err) = hashWithSalt salt name
-
 
 -- These are the first 2 layers of my 3 layer cake https://www.parsonsmatt.org/2018/03/22/three_layer_haskell_cake.html
 -- The amount of classes here should be minimized, as it is tiresome to write that code. I love just how
@@ -71,7 +47,7 @@ class HasTargetPath f where
 
     -- I think it makes sense to use a maybe here as opposed to 2 different functions, because as I wrote more code,
     -- it got very painful having to always write an extra function.
-    addContent :: f (Maybe LText) -> f (Maybe LText) -> f LText -> f (Path Rel File)
+    addContent :: f (Maybe LText) -> f (Maybe LText) -> f ByteString -> f (Path Rel File)
 
 type GitRef = LText
 
@@ -95,43 +71,49 @@ data Env = Env {
     getTmpPath :: Path Abs Dir,
     getGitRepoPath :: Path Abs Dir,
     getCachePath :: Path Abs Dir,
-    getResultPath :: Path Abs Dir
+    getResultPath :: Path Abs Dir,
+    getHashLength :: Int64
 }
 
 newtype BaseMonad a = BaseMonad { getBaseMonad :: ReaderT Env IO a }
-    deriving (Functor, Applicative, Monad, MonadReader Env, MonadIO, MonadThrow)
+    deriving (Functor, Applicative, Monad, MonadReader Env, MonadIO, MonadThrow, MonadCatch, MonadMask)
 
-setDefaultPaths :: BaseMonad a -> IO a
-setDefaultPaths b =
+lowerIO :: Path Abs Dir -> Int64 -> BaseMonad a -> IO a
+lowerIO baseDir hashLength b =
     do
-        currentDir <- getCurrentDirectory
-        env <- Env
-                <$> parseAbsDir (combine currentDir "target/")
-                <*> parseAbsDir (combine currentDir ".git/")
-                <*> parseAbsDir (combine currentDir "cache/")
-                <*> parseAbsDir (combine currentDir "results/")
-                <*> parseAbsDir (combine currentDir "tmp/")
+        target <- parseRelDir "target/"
+        tmp <- parseRelDir "tmp/"
+        git <- parseRelDir ".git/"
+        cache <- parseRelDir "cache/"
+        results <- parseRelDir "results/"
+        
+        let env = Env (baseDir </> target)  (baseDir </> tmp) (baseDir </> git) (baseDir </> cache) (baseDir </> results) hashLength
+        mapM_ (PIO.createDirIfMissing False . (baseDir </>)) [target, tmp, cache, results]
         runReaderT (getBaseMonad b) env
 
--- TODO: This does not produce a fixed size hash, which is stupid.
-hashFunction :: Hashable a => a -> LText
-hashFunction = format (base 36) . hash
+withDefaults :: BaseMonad a -> IO a
+withDefaults b = PIO.getCurrentDir >>= (\dir -> lowerIO (parent dir) 7 b)
 
-formatFileName :: (MonadThrow m, Hashable a) => Maybe LText -> Maybe LText -> a -> m (Path Rel File)
-formatFileName label extension =
-    parseRelFile
+hashFn :: ByteString -> Digest SHA256
+hashFn = hash
+
+formatFileName :: MonadThrow m => Maybe LText -> Maybe LText -> Int64 -> Digest a -> m (Path Rel File)
+formatFileName label extension hashLength =
+    maybe identity (\ext -> (>>= addFileExtension (toS ext))) extension
+    . parseRelFile
     . toS
-    . maybe identity (flip $ format $ text % "." % text) extension
     . maybe identity (format $ text % "-" % text) label
-    . hashFunction
+    . take hashLength
+    . show
 
-formatDirName :: (MonadThrow m, Hashable a) => Maybe LText -> a -> m (Path Rel Dir)
-formatDirName label =
+formatDirName :: MonadThrow m => Maybe LText -> Int64 -> Digest a -> m (Path Rel Dir)
+formatDirName label hashLength =
     parseRelDir
     . toS
     . (<> "/")
     . maybe identity (format $ text % "-" % text) label
-    . hashFunction
+    . take hashLength
+    . show
 
 -- The more general version causes overlapping instances later on.
 -- instance (MonadIO m, MonadThrow m, MonadReader Env m) => HasTargetPath m where
@@ -142,12 +124,13 @@ instance HasTargetPath BaseMonad where
             label <- label
             extension <- extension
             content <- content
-            filename <- formatFileName label extension content
+            hashLength <- asks getHashLength
+            filename <- formatFileName label extension hashLength (hashFn content)
             targetPath <- targetPath
-            let path = toFilePath (targetPath </> filename)
+            let path = targetPath </> filename
             
-            exists <- (liftIO . doesFileExist) path
-            bool (liftIO $ writeFile path content) (pure ()) exists
+            exists <- (liftIO . PIO.doesFileExist) path
+            bool (liftIO $ B.writeFile (toFilePath path) content) (pure ()) exists
             return filename
 
 
@@ -166,94 +149,82 @@ instance HasGit BaseMonad where
 
 -- Puts an external file, whose hash is yet unknown into the local database. It does not return the path where
 -- it is put into to force the user to explicitly lookup the hash to ensure reproducibility. 
-importLocalFile :: BaseMonad (Path Abs File) -> BaseMonad (Path Rel File)
+importLocalFile :: Path Abs File -> BaseMonad (Path Rel File)
 importLocalFile source =
     do
-        source <- source
         targetName <- setFileExtension "" . filename $ source
-        contents <- liftIO . readFile . toFilePath $ source
-        filename <- formatFileName (Just . toS . toFilePath $ targetName) (Just . toS . fileExtension $ source) contents
+        contents <- liftIO . B.readFile . toFilePath $ source
+        hashLength <- asks getHashLength
+        -- TODO: this does not deal well with multiple extensions
+        filename <- formatFileName (Just . toS . toFilePath $ targetName) (Just . toS . fileExtension $ source) hashLength (hashFn contents)
 
         cachePath <- cachePath
-        liftIO (renameFile (toFilePath source) (toFilePath (cachePath </> filename)))
+        liftIO (PIO.renameFile source (cachePath </> filename))
         return filename
 
-importLocalDir :: BaseMonad (Path Abs Dir) -> BaseMonad (Path Rel Dir)
+foldHash :: [ByteString] -> Digest SHA256
+foldHash = hashFinalize . foldl hashUpdate hashInit
+
+importLocalDir :: Path Abs Dir -> BaseMonad (Path Rel Dir)
 importLocalDir source =
     do
-        source <- source
-        directoryContents <- liftIO . readDirectoryWithL readFile . toFilePath $ source
-        let a = hash <$> directoryContents
+        paths <- PIO.listDirRecurRel source
+        contents <- liftIO $ mapM (B.readFile . toFilePath . (source </>)) (snd paths)
+        let hash = foldHash ((toS . toFilePath <$> fst paths) ++ (toS . toFilePath <$> snd paths) ++ contents)
 
-        contents <- liftIO . readFile . toFilePath $ source
-        dirname <- formatDirName (Just . toS . toFilePath . dirname $ source) contents
+        hashLength <- asks getHashLength
+        dirname <- formatDirName (Just . dropEnd 1 . toS . toFilePath . dirname $ source) hashLength hash
 
         cachePath <- cachePath
-        liftIO (renameFile (toFilePath source) (toFilePath (cachePath </> dirname)))
+        liftIO (PIO.renameDir source (cachePath </> dirname))
         return dirname
 
-newtype CacheLookupException = CacheLookupException { key :: LText } deriving (Show)
-
-instance Exception CacheLookupException
 
 -- This is used when you want to guarantee your data having some hash like when the data was imported with
 -- importLocalFile. This is a nice solution for dealing with outside data and still having reproducibility
 -- guarantees.
-findCached_ :: (FilePath -> IO Bool) -> BaseMonad LText -> BaseMonad FilePath
-findCached_ predicate hash =
+findCached_ :: (Path Abs Dir -> BaseMonad [Path Rel a]) -> LText -> BaseMonad (Maybe (Path Rel a))
+findCached_ listPaths hash =
     do
         cachePath <- cachePath
-        hash <- hash
+        paths <- listPaths cachePath
 
-        allpaths <- liftIO . listDirectory . toFilePath $ cachePath
-        filtered <- liftIO . foldlM (\acc next -> ifM (predicate next) (return (next:acc)) (return acc)) [] $ allpaths
-        let paths = fmap toS filtered
+        return . find ((== Just hash) . head . splitOn "-" . toS . toFilePath) $ paths
 
-        filepath <- case find ((== Just hash) . head . splitOn "-") paths of
-            Just x -> return x
-            Nothing -> throwM (CacheLookupException hash)
-        return (toS filepath)
 
-findCachedFile :: BaseMonad LText -> BaseMonad (Path Rel File)
-findCachedFile hash = findCached_ doesFileExist hash >>= parseRelFile
+findCachedFile :: LText -> BaseMonad (Maybe (Path Rel File))
+findCachedFile = findCached_ (fmap snd . PIO.listDirRel)
 
-findCachedDir :: BaseMonad LText -> BaseMonad (Path Rel Dir)
-findCachedDir hash = findCached_ doesDirectoryExist hash >>= parseRelDir
+findCachedDir :: LText -> BaseMonad (Maybe (Path Rel Dir))
+findCachedDir = findCached_ (fmap fst . PIO.listDirRel)
 
-fetchKaggle_ :: BaseMonad LText -> BaseMonad (Path Rel Dir)
+fetchKaggle_ :: LText -> BaseMonad (Path Rel Dir)
 fetchKaggle_ competition =
-    do
-        competition <- competition
-        shelly . verbosely . print_stdout True . onCommandHandles (initOutputHandles (`System.IO.hSetBinaryMode` True)) $
-            run "kaggle" ["competitions", "download", "-c", toS competition, "-p", "/tmp/"]
-        
-        let dir = ((++ "/") . toS) competition
-        shelly $ run "unzip" [toS . combine "/tmp" . (`addExtension` "zip") . toS $ competition, "-d", toS . combine "/tmp" $ dir]
+    let fetchKaggle__ tmpPath = do
+            shelly . verbosely . print_stdout True . onCommandHandles (initOutputHandles (`System.IO.hSetBinaryMode` True)) $
+                run "kaggle" ["competitions", "download", "-c", toS competition, "-p", toS $ toFilePath tmpPath]
+            
+            directory <- parseRelDir $ ((++ "/") . toS) competition
+            shelly $ run "unzip" [
+                    toS . combine (toFilePath tmpPath) . (`addExtension` "zip") . toS $ competition,
+                    "-d",
+                    toS $ toFilePath $ tmpPath </> directory
+                ]
 
-        cachePath <- cachePath
-
-        liftIO $ renameDirectory (combine "/tmp" dir) (combine (toFilePath cachePath) dir)
-        -- importLocalFile (parseAbsFile $ combine "/tmp" (toS competition))
-        undefined
+            importLocalDir (tmpPath </> directory)
+    in
+        asks getTmpPath >>= (\tmp -> PIO.withTempDir tmp (toS competition) fetchKaggle__)
 
 
 instance HasCache BaseMonad where
     cachePath = asks getCachePath
     tmpPath = asks getTmpPath
-    fetchKaggle = undefined
-downloadKaggle competition =
-    do
-        competition <- competition
-        shelly . verbosely . print_stdout True . onCommandHandles (initOutputHandles (`System.IO.hSetBinaryMode` True)) $
-            run "kaggle" ["competitions", "download", "-c", toS competition, "-p", "/tmp/"]
-        
-        let dir = ((++ "/") . toS) competition
-        shelly $ run "unzip" [toS . combine "/tmp" . (`addExtension` "zip") . toS $ competition, "-d", toS . combine "/tmp" $ dir]
-
-        cachePath <- cachePath
-
-        liftIO $ renameDirectory (combine "/tmp" dir) (combine (toFilePath cachePath) dir)
-        importLocalFile (parseAbsFile $ combine "/tmp" (toS competition))
+    fetchKaggle competition hash =
+        do
+            mPath <- hash >>= findCachedDir
+            case mPath of
+                Just p -> return p
+                Nothing -> competition >>= fetchKaggle_
 
 
 -- What the fuck, why do I need to write this trivial code? There surely is a better

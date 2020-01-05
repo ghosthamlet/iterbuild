@@ -64,7 +64,7 @@ cachedApplyCode cachePath obj args kwargs  =
 
 -- args: file label, function name, contents
 makeObject :: (Applicative f, HasTargetPath f) => f (Maybe LText) -> f LText -> f LText -> f PyObject
-makeObject label funName = liftA2 (flip (PyObject . PyModule)) funName . addContent label (pure . Just $ "py")
+makeObject label funName = liftA2 (flip (PyObject . PyModule)) funName . addContent label (pure . Just $ "py") . fmap toS
 
 -- This should probably be written as a polyvariadic function, like printf "%s".
 apply :: (Applicative f, HasTargetPath f) => f PyObject -> f [PyObject] -> f [(LText, PyObject)] -> f PyObject
