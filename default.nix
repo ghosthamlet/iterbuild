@@ -10,6 +10,7 @@ pkgs.haskell-nix.stackProject {
     # Not sure pkgconfig is intended for this, but what should I do, it works and the attribute does not have documentation.
     # I found it after reading the source code for a considerable amount of time.
     packages.iterbuild.components.library.pkgconfig = [[pkgs.which pkgs.git pkgs.unzip kaggle]];
+    # TODO: When I try to inspect the iterbuild components, I get the error that postUnpack is both null and not null, lol
     packages.iterbuild.components.library.postUnpack = ''
     substituteInPlace iterbuild/src/Capabilities.hs --replace "\"git\"" "\"$(which git)"\"
     substituteInPlace iterbuild/src/Capabilities.hs --replace "\"kaggle\"" "\"$(which kaggle)"\"

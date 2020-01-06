@@ -8,6 +8,8 @@
 module Capabilities where
 
 import Protolude hiding (writeFile, readFile, (%), hash, take, first)
+import System.IO
+import qualified GHC.Show
 import System.FilePath (combine, addExtension, makeRelative)
 import qualified System.IO
 import Crypto.Hash (Context, Digest, SHA256, hash, hashInit, hashUpdate, hashFinalize)
@@ -58,6 +60,15 @@ class HasTargetPath f => HasGit f where
     -- from cache. (i.e. pass an argument like read_cache("4f23ea32ef534e") that outputs a pandas object by reading from cache.)
     fetchCommit :: f LText -> f (Path Rel Dir)
 
+data UnexpectedHash = 
+    Kaggle { competition :: LText }
+
+instance Show UnexpectedHash where
+    show e = toS .
+        (format ("Got an unexpected hash while downloading the kaggle competition '" % text % "'. This means the data of the competition has changed.")) $ (competition e)
+
+instance Exception UnexpectedHash
+
 class HasCache f where
     cachePath :: f (Path Abs Dir)
     tmpPath :: f (Path Abs Dir)
@@ -96,6 +107,19 @@ withDefaults b = PIO.getCurrentDir >>= (\dir -> lowerIO (parent dir) 7 b)
 
 hashFn :: ByteString -> Digest SHA256
 hashFn = hash
+
+hashFile :: MonadIO m => Path a File -> m (Digest SHA256)
+hashFile = fmap hashFn . liftIO . B.readFile . toFilePath
+
+foldHash :: [ByteString] -> Digest SHA256
+foldHash = hashFinalize . foldl hashUpdate hashInit
+
+-- maybe the contents should be hashed in parallel
+hashDir :: MonadIO m => Path a Dir -> m (Digest SHA256)
+hashDir source = do
+        paths <- PIO.listDirRecurRel source
+        contents <- liftIO $ mapM (B.readFile . toFilePath . (source </>)) (snd paths)
+        return $ foldHash ((toS . toFilePath <$> fst paths) ++ (toS . toFilePath <$> snd paths) ++ contents)
 
 formatFileName :: MonadThrow m => Maybe LText -> Maybe LText -> Int64 -> Digest a -> m (Path Rel File)
 formatFileName label extension hashLength =
@@ -149,35 +173,30 @@ instance HasGit BaseMonad where
 
 -- Puts an external file, whose hash is yet unknown into the local database. It does not return the path where
 -- it is put into to force the user to explicitly lookup the hash to ensure reproducibility. 
-importLocalFile :: Path Abs File -> BaseMonad (Path Rel File)
+importLocalFile :: Path Abs File -> BaseMonad (Digest SHA256, Path Rel File)
 importLocalFile source =
     do
         targetName <- setFileExtension "" . filename $ source
-        contents <- liftIO . B.readFile . toFilePath $ source
+        digest <- hashFile source
         hashLength <- asks getHashLength
         -- TODO: this does not deal well with multiple extensions
-        filename <- formatFileName (Just . toS . toFilePath $ targetName) (Just . toS . fileExtension $ source) hashLength (hashFn contents)
+        filename <- formatFileName (Just . toS . toFilePath $ targetName) (Just . toS . fileExtension $ source) hashLength digest
 
         cachePath <- cachePath
         liftIO (PIO.renameFile source (cachePath </> filename))
-        return filename
+        return (digest, filename)
 
-foldHash :: [ByteString] -> Digest SHA256
-foldHash = hashFinalize . foldl hashUpdate hashInit
-
-importLocalDir :: Path Abs Dir -> BaseMonad (Path Rel Dir)
+importLocalDir :: Path Abs Dir -> BaseMonad (Digest SHA256, Path Rel Dir)
 importLocalDir source =
     do
-        paths <- PIO.listDirRecurRel source
-        contents <- liftIO $ mapM (B.readFile . toFilePath . (source </>)) (snd paths)
-        let hash = foldHash ((toS . toFilePath <$> fst paths) ++ (toS . toFilePath <$> snd paths) ++ contents)
+        digest <- hashDir source
 
         hashLength <- asks getHashLength
-        dirname <- formatDirName (Just . dropEnd 1 . toS . toFilePath . dirname $ source) hashLength hash
+        dirname <- formatDirName (Just . dropEnd 1 . toS . toFilePath . dirname $ source) hashLength digest
 
         cachePath <- cachePath
         liftIO (PIO.renameDir source (cachePath </> dirname))
-        return dirname
+        return (digest, dirname)
 
 
 -- This is used when you want to guarantee your data having some hash like when the data was imported with
@@ -186,6 +205,7 @@ importLocalDir source =
 findCached_ :: (Path Abs Dir -> BaseMonad [Path Rel a]) -> LText -> BaseMonad (Maybe (Path Rel a))
 findCached_ listPaths hash =
     do
+        -- TODO: What about nonhomogeneous hash lengths?
         cachePath <- cachePath
         paths <- listPaths cachePath
 
@@ -198,11 +218,10 @@ findCachedFile = findCached_ (fmap snd . PIO.listDirRel)
 findCachedDir :: LText -> BaseMonad (Maybe (Path Rel Dir))
 findCachedDir = findCached_ (fmap fst . PIO.listDirRel)
 
-fetchKaggle_ :: LText -> BaseMonad (Path Rel Dir)
+fetchKaggle_ :: LText -> BaseMonad (Digest SHA256, Path Rel Dir)
 fetchKaggle_ competition =
     let fetchKaggle__ tmpPath = do
-            shelly . verbosely . print_stdout True . onCommandHandles (initOutputHandles (`System.IO.hSetBinaryMode` True)) $
-                run "kaggle" ["competitions", "download", "-c", toS competition, "-p", toS $ toFilePath tmpPath]
+            shelly $ run "kaggle" ["competitions", "download", "-c", toS competition, "-p", toS $ toFilePath tmpPath]
             
             directory <- parseRelDir $ ((++ "/") . toS) competition
             shelly $ run "unzip" [
@@ -215,16 +234,18 @@ fetchKaggle_ competition =
     in
         asks getTmpPath >>= (\tmp -> PIO.withTempDir tmp (toS competition) fetchKaggle__)
 
+checkedFetchKaggle :: LText -> LText -> BaseMonad (Path Rel Dir)
+checkedFetchKaggle competition expectedHash =
+    do
+        (digest, path) <- fetchKaggle_ competition
+        when (expectedHash /= show digest) $ throwM (Kaggle competition)
+        return path
 
 instance HasCache BaseMonad where
     cachePath = asks getCachePath
     tmpPath = asks getTmpPath
-    fetchKaggle competition hash =
-        do
-            mPath <- hash >>= findCachedDir
-            case mPath of
-                Just p -> return p
-                Nothing -> competition >>= fetchKaggle_
+    fetchKaggle competition expectedHash =
+        fromMaybe <$> (join $ (liftM2 checkedFetchKaggle) competition expectedHash) <*> (expectedHash >>= findCachedDir)
 
 
 -- What the fuck, why do I need to write this trivial code? There surely is a better
