@@ -12,9 +12,13 @@ pkgs.haskell-nix.stackProject {
     packages.iterbuild.components.library.pkgconfig = [[pkgs.which pkgs.git pkgs.unzip kaggle]];
     # TODO: When I try to inspect the iterbuild components, I get the error that postUnpack is both null and not null, lol
     packages.iterbuild.components.library.postUnpack = ''
-    substituteInPlace iterbuild/src/Capabilities.hs --replace "\"git\"" "\"$(which git)"\"
-    substituteInPlace iterbuild/src/Capabilities.hs --replace "\"kaggle\"" "\"$(which kaggle)"\"
-    substituteInPlace iterbuild/src/Capabilities.hs --replace "\"unzip\"" "\"$(which unzip)"\"
+    oldwd=$PWD
+    cd $sourceRoot
+    # I know this actually worked because if you don't do it, iterbuild fails with kaggle not found in PATH
+    substituteInPlace src/Capabilities.hs --replace "\"git\"" "\"$(which git)"\"
+    substituteInPlace src/Capabilities.hs --replace "\"kaggle\"" "\"$(which kaggle)"\"
+    substituteInPlace src/Capabilities.hs --replace "\"unzip\"" "\"$(which unzip)"\"
+    cd $oldwd
     # cat iterbuild/src/Capabilities.hs
     '';
     packages.iterbuild.dontPatchELF = false; # this does not remove unnecessary deps, dont feel like chasing unnecessary deps now
