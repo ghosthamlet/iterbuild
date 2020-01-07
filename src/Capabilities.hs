@@ -5,7 +5,19 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ExtendedDefaultRules #-}
-module Capabilities where
+
+-- | These are the first 2 layers of my <https://www.parsonsmatt.org/2018/03/22/three_layer_haskell_cake.html 3 layer cake>.
+-- The amount of classes here should be minimized, as it is tiresome to write that code. I like how you can use polymorphism
+-- to dump all your imperative code(layer 1) into one file and then just forget about it.
+module Capabilities(
+    HasTargetPath (..),
+    UnexpectedHash (..),
+    HasCache (..),
+    BaseMonad (..),
+    lowerIO,
+    withDefaults,
+    fetchKaggle_
+) where
 
 import Protolude hiding (writeFile, readFile, (%), hash, take, first)
 import System.IO
@@ -18,48 +30,49 @@ import qualified Path.IO as PIO
 import Formatting hiding (build)
 import Shelly hiding ((</>), find)
 
-import Data.Text.Lazy (splitOn, take, dropEnd)
-import qualified Data.ByteString as B
+import qualified Data.Text.Lazy as LT
+import qualified Data.ByteString as BS
 import Data.Functor.Compose
 import Control.Monad.Catch
 import Control.Arrow
 
 import Expr
 
--- These are the first 2 layers of my 3 layer cake https://www.parsonsmatt.org/2018/03/22/three_layer_haskell_cake.html
--- The amount of classes here should be minimized, as it is tiresome to write that code. I love just how
--- you can use polymorphism to dump all your 'imperative' code(layer 1) into one file and then just forget about it.
-
+-- | Applicatives with the ability to write the build output to a target path.
 class HasTargetPath f where
+    -- | Path where the build output should be dumped to.
     targetPath :: f (Path Abs Dir)
-    -- Args: optional label, optional file extension, contents
-    
-    -- Just hashes the text and somehow embedds that information into the path. The resulting
-    -- filename gets returned. It also checks whether the file exists first. This is mainly used by
+    -- | Args: optional label, optional file extension(eg. ".txt", with the "."), contents
+    --
+    -- This writes the ByteString into a file in the @ targetPath @. The file name will be returned
+    -- as a path relative to the @ targetPath @ and it will contain the label and extension
+    -- information in addition to a hash of the ByteString
+    -- 
+    -- It is also checked whether the file exists first. This is mainly used by
     -- very common snippets that are used for glueing code snippets and don't need to be stored
     -- in a git repository.
-
-    -- At some later point, I might add 'ressource dirs', where the user can
-    -- define such gluing snippets and refer to them later, but for now this is sufficient since this
-    -- would mean that I need to isolate a 'naming function' that then gets used by addContent and the
-    -- new function, though I will probably be able to keep this type-class interface so I am fine.
 
     -- Guideline: Write your code such that files that are used often are named uniformly by hardcoding
     -- the labels into the code.
 
-    -- I think it makes sense to use a maybe here as opposed to 2 different functions, because as I wrote more code,
-    -- it got very painful having to always write an extra function.
+    -- TODO: At some later point, I might add 'ressource dirs', where the user can
+    -- define such gluing snippets and refer to them later, but for now this is sufficient since this
+    -- would mean that I need to isolate a 'naming function' that then gets used by addContent and the
+    -- new function, though I will probably be able to keep this type-class interface so I am fine.
     addContent :: f (Maybe LText) -> f (Maybe LText) -> f ByteString -> f (Path Rel File)
 
-type GitRef = LText
-
+-- | Applicatives with the ability to access git. Notice the absence of a function for fetching from a branch -
+-- this is no mistake. Fetching from a branch yields different results depending on the state of the git repo,
+-- but we would like the contents of our path to always be the same in order to ensure reproducibility.
 class HasTargetPath f => HasGit f where
+    -- | Location of the git repository from which to retrieve the code.
     gitRepoPath :: f (Path Abs Dir)
-    -- This should really only be a commit to ensure reproducibility and thus enable having clear hashes for computations.
-    -- This means I can check whether a python object has been pre-computed and then possibly provide the python object
-    -- from cache. (i.e. pass an argument like read_cache("4f23ea32ef534e") that outputs a pandas object by reading from cache.)
+    -- | Fetches a commit from the git repo, returning the path(relative to 'gitRepoPath') the contents of the commit
+    -- were written to.
     fetchCommit :: f LText -> f (Path Rel Dir)
 
+-- | This exception occurs when attempting to import an external source to the cache, but the external source
+-- has changed (and thus its hash has also changed). We check the hashes because we want to ensure reproducibility.
 data UnexpectedHash = 
     Kaggle { competition :: LText }
 
@@ -69,11 +82,23 @@ instance Show UnexpectedHash where
 
 instance Exception UnexpectedHash
 
+-- | This is used for importing external data and the code that gets built also uses this path to cache results of expensive computations.
 class HasCache f where
+    -- | Path to use as cache.
     cachePath :: f (Path Abs Dir)
+    -- | Path where to generate temporary files and directories. Used when importing data from external sources.
     tmpPath :: f (Path Abs Dir)
-    -- First argument is competition, second one is a hash. Output is the path where data was cached or a new path where
-    -- the data was downloaded.
+    -- | First argument is competition, second one is a hexadecimal hash. Output is the path where data was cached or a new path where
+    -- the data was downloaded. This function checks whether a directory with the given hash already exists, if it does not, it fetches
+    -- the competition data from kaggle and checks whether the fetched data has the expected hash. If it does not, it throws a
+    -- @ UnexpectedHash @ exception.
+    --
+    -- This function is intended to be in tandem with the iterbuild command line tool. If you need to write a function depending on data
+    -- from a kaggle competition, you will first need to run @ iterbuild prefetch --kaggle YOURCOMPETITION @. This will print out the hash
+    -- you will want to pass to fetchKaggle(you may also pass only the first n characters of the full hash). After this step has been done,
+    -- you will never need to run this command again - even if you delete the cache, the file will be downloaded again automatically.
+    --
+    -- This is done this way in order to ensure reproducibility.
     fetchKaggle :: f LText -> f LText -> f (Path Rel Dir)
 
 data Env = Env {
@@ -86,9 +111,14 @@ data Env = Env {
     getHashLength :: Int64
 }
 
+-- | Data structure defined with mtl, implementing all the above capabilities.
 newtype BaseMonad a = BaseMonad { getBaseMonad :: ReaderT Env IO a }
     deriving (Functor, Applicative, Monad, MonadReader Env, MonadIO, MonadThrow, MonadCatch, MonadMask)
 
+-- | Fixes the various parameters in the reader monad with sane defaults. The first argument is a base path
+-- in which all other paths will be generated(and the .git/ directory is expected to be there) and the second
+-- argument determines the hash length. Note that changing the hash length for an existing project will cause
+-- iterbuild to ignore the things that were cached before. This may get fixed at some point.
 lowerIO :: Path Abs Dir -> Int64 -> BaseMonad a -> IO a
 lowerIO baseDir hashLength b =
     do
@@ -102,6 +132,10 @@ lowerIO baseDir hashLength b =
         mapM_ (PIO.createDirIfMissing False . (baseDir </>)) [target, tmp, cache, results]
         runReaderT (getBaseMonad b) env
 
+-- | Fixes the various parameters in the reader monad assuming standard directory structure. This means that your current
+-- directory is the place were the main branch is checked out, but the actual .git dir and the iterbuild internal directories
+-- are in the parent directory of the current directory. The default hash length is 7, yielding a probability of < 10^(-8) of
+-- two hashes being the same.
 withDefaults :: BaseMonad a -> IO a
 withDefaults b = PIO.getCurrentDir >>= (\dir -> lowerIO (parent dir) 7 b)
 
@@ -109,17 +143,21 @@ hashFn :: ByteString -> Digest SHA256
 hashFn = hash
 
 hashFile :: MonadIO m => Path a File -> m (Digest SHA256)
-hashFile = fmap hashFn . liftIO . B.readFile . toFilePath
+hashFile = fmap hashFn . liftIO . BS.readFile . toFilePath
 
 foldHash :: [ByteString] -> Digest SHA256
 foldHash = hashFinalize . foldl hashUpdate hashInit
 
--- maybe the contents should be hashed in parallel
+-- Maybe the contents should be hashed in parallel
 hashDir :: MonadIO m => Path a Dir -> m (Digest SHA256)
 hashDir source = do
         paths <- PIO.listDirRecurRel source
-        contents <- liftIO $ mapM (B.readFile . toFilePath . (source </>)) (snd paths)
+        contents <- liftIO $ mapM (BS.readFile . toFilePath . (source </>)) (snd paths)
         return $ foldHash ((toS . toFilePath <$> fst paths) ++ (toS . toFilePath <$> snd paths) ++ contents)
+
+-- Checks whether the input hashes match on the first min(len(t1), len(t2)) characters.
+hashEq :: LText -> LText -> Bool
+hashEq t1 t2 = all (uncurry (==)) $ LT.zip t1 t2
 
 formatFileName :: MonadThrow m => Maybe LText -> Maybe LText -> Int64 -> Digest a -> m (Path Rel File)
 formatFileName label extension hashLength =
@@ -127,7 +165,7 @@ formatFileName label extension hashLength =
     . parseRelFile
     . toS
     . maybe identity (format $ text % "-" % text) label
-    . take hashLength
+    . LT.take hashLength
     . show
 
 formatDirName :: MonadThrow m => Maybe LText -> Int64 -> Digest a -> m (Path Rel Dir)
@@ -136,7 +174,7 @@ formatDirName label hashLength =
     . toS
     . (<> "/")
     . maybe identity (format $ text % "-" % text) label
-    . take hashLength
+    . LT.take hashLength
     . show
 
 -- The more general version causes overlapping instances later on.
@@ -154,7 +192,7 @@ instance HasTargetPath BaseMonad where
             let path = targetPath </> filename
             
             exists <- (liftIO . PIO.doesFileExist) path
-            bool (liftIO $ B.writeFile (toFilePath path) content) (pure ()) exists
+            bool (liftIO $ BS.writeFile (toFilePath path) content) (pure ()) exists
             return filename
 
 
@@ -192,7 +230,7 @@ importLocalDir source =
         digest <- hashDir source
 
         hashLength <- asks getHashLength
-        dirname <- formatDirName (Just . dropEnd 1 . toS . toFilePath . dirname $ source) hashLength digest
+        dirname <- formatDirName (Just . LT.dropEnd 1 . toS . toFilePath . dirname $ source) hashLength digest
 
         cachePath <- cachePath
         liftIO (PIO.renameDir source (cachePath </> dirname))
@@ -209,7 +247,7 @@ findCached_ listPaths hash =
         cachePath <- cachePath
         paths <- listPaths cachePath
 
-        return . find ((== Just hash) . head . splitOn "-" . toS . toFilePath) $ paths
+        return . find ((== Just hash) . head . LT.splitOn "-" . toS . toFilePath) $ paths
 
 
 findCachedFile :: LText -> BaseMonad (Maybe (Path Rel File))
@@ -218,6 +256,8 @@ findCachedFile = findCached_ (fmap snd . PIO.listDirRel)
 findCachedDir :: LText -> BaseMonad (Maybe (Path Rel Dir))
 findCachedDir = findCached_ (fmap fst . PIO.listDirRel)
 
+-- | Fetches competition data from kaggle, returning a pair of the data directory hash(after unzipping) and the path
+-- relative to the cache path where the directory lies.
 fetchKaggle_ :: LText -> BaseMonad (Digest SHA256, Path Rel Dir)
 fetchKaggle_ competition =
     let fetchKaggle__ tmpPath = do

@@ -58,6 +58,7 @@ cachedApplyCode cachePath obj args kwargs  =
                 <$> objects)
         ++ ["import os.path",
             format ("   if os.path.isfile('" % string % "'):") objCachePath,
+            "   # Read from cache",
             "else:",
             format ("       result = " % text % "(" % text % ")") (identifier obj) paramString,
             "       # TODO: write to cache"]

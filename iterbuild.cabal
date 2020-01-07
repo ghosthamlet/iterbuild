@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: e0985005516d4ce061281e12867df2570b1e7f4a2e1a8373a821e026bdea6836
+-- hash: 3e814c8e51bbb9e87788639978684a54cfa26bf23d3f67152d5dea27ee5f435b
 
 name:           iterbuild
 version:        0.1.0.0
@@ -29,7 +29,6 @@ library
   exposed-modules:
       Capabilities
       Expr
-      Lib
       Python
   other-modules:
       Paths_iterbuild
