@@ -12,6 +12,8 @@ pkgs.haskell-nix.stackProject {
     packages.iterbuild.components.library.pkgconfig = [[pkgs.which pkgs.git pkgs.unzip kaggle]];
     # TODO: When I try to inspect the iterbuild components, I get the error that postUnpack is both null and not null, lol
     packages.iterbuild.components.library.postUnpack = ''
+    # We cd around here, because depending on whether this package is imported as a tarball or imported locally, the $sourceRoot
+    # is somewhere else. Also if we don't cd into our oldwd after running our stuff, bad things happen.
     oldwd=$PWD
     cd $sourceRoot
     # I know this actually worked because if you don't do it, iterbuild fails with kaggle not found in PATH

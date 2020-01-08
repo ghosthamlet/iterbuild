@@ -9,10 +9,16 @@
 -- | These are the first 2 layers of my <https://www.parsonsmatt.org/2018/03/22/three_layer_haskell_cake.html 3 layer cake>.
 -- The amount of classes here should be minimized, as it is tiresome to write that code. I like how you can use polymorphism
 -- to dump all your imperative code(layer 1) into one file and then just forget about it.
+--
+-- TODO: I should unify targetPath, resultPath and cachePath into a big content addressable store and wrap it into a unified
+-- typeclass for accessing it. No more pesky path shuffling. Also that contents store should have atomic writes and and be read
+-- only, maybe even be behind a service. Also I don't like how I am handling file extensions, if there are multiple ones, this
+-- program just respects the last one.
 module Capabilities(
     HasTargetPath (..),
     UnexpectedHash (..),
     HasCache (..),
+    HasGit (..),
     BaseMonad (..),
     lowerIO,
     withDefaults,
@@ -22,13 +28,13 @@ module Capabilities(
 import Protolude hiding (writeFile, readFile, (%), hash, take, first)
 import System.IO
 import qualified GHC.Show
-import System.FilePath (combine, addExtension, makeRelative)
+import System.FilePath (combine, addExtension, makeRelative, splitPath, joinPath)
 import qualified System.IO
 import Crypto.Hash (Context, Digest, SHA256, hash, hashInit, hashUpdate, hashFinalize)
 import Path
 import qualified Path.IO as PIO
 import Formatting hiding (build)
-import Shelly hiding ((</>), find)
+import qualified Shelly
 
 import qualified Data.Text.Lazy as LT
 import qualified Data.ByteString as BS
@@ -164,7 +170,7 @@ formatFileName label extension hashLength =
     maybe identity (\ext -> (>>= addFileExtension (toS ext))) extension
     . parseRelFile
     . toS
-    . maybe identity (format $ text % "-" % text) label
+    . maybe identity (format $ text % "_" % text) label
     . LT.take hashLength
     . show
 
@@ -173,7 +179,7 @@ formatDirName label hashLength =
     parseRelDir
     . toS
     . (<> "/")
-    . maybe identity (format $ text % "-" % text) label
+    . maybe identity (format $ text % "_" % text) label
     . LT.take hashLength
     . show
 
@@ -195,17 +201,21 @@ instance HasTargetPath BaseMonad where
             bool (liftIO $ BS.writeFile (toFilePath path) content) (pure ()) exists
             return filename
 
+exportGit :: MonadIO m => LText -> Path Abs Dir -> m ()
+exportGit commit path = do
+    PIO.createDir path
+    Shelly.shelly $ Shelly.escaping False $ Shelly.run "git" ["archive", toS commit, "| tar -x -C", toS $ toFilePath path]
+    return ()
 
 -- instance (MonadIO m, MonadThrow m, MonadReader Env m) => HasGit m where
 instance HasGit BaseMonad where
     gitRepoPath = asks getGitRepoPath
     fetchCommit commit =
-        -- check for existence?
         do
             commit <- commit
-            pathEnd <- parseRelDir (toS commit)
+            pathEnd <- parseRelDir (toS $ "git_" <> commit)
             writePath <- (</> pathEnd) <$> targetPath
-            shelly $ escaping False $ run "git" ["archive", toS commit, "| tar -x -C", "git-" <> toS (toFilePath writePath)]
+            whenM (not <$> PIO.doesDirExist writePath) (exportGit commit writePath)
             return pathEnd
 
 
@@ -247,7 +257,7 @@ findCached_ listPaths hash =
         cachePath <- cachePath
         paths <- listPaths cachePath
 
-        return . find ((== Just hash) . head . LT.splitOn "-" . toS . toFilePath) $ paths
+        return . find ((== Just hash) . head . LT.splitOn "_" . toS . toFilePath) $ paths
 
 
 findCachedFile :: LText -> BaseMonad (Maybe (Path Rel File))
@@ -261,10 +271,10 @@ findCachedDir = findCached_ (fmap fst . PIO.listDirRel)
 fetchKaggle_ :: LText -> BaseMonad (Digest SHA256, Path Rel Dir)
 fetchKaggle_ competition =
     let fetchKaggle__ tmpPath = do
-            shelly $ run "kaggle" ["competitions", "download", "-c", toS competition, "-p", toS $ toFilePath tmpPath]
+            Shelly.shelly $ Shelly.run "kaggle" ["competitions", "download", "-c", toS competition, "-p", toS $ toFilePath tmpPath]
             
             directory <- parseRelDir $ ((++ "/") . toS) competition
-            shelly $ run "unzip" [
+            Shelly.shelly $ Shelly.run "unzip" [
                     toS . combine (toFilePath tmpPath) . (`addExtension` "zip") . toS $ competition,
                     "-d",
                     toS $ toFilePath $ tmpPath </> directory

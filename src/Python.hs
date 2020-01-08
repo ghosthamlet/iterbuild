@@ -5,8 +5,7 @@ module Python where
 
 import Protolude hiding (second, (%))
 import Control.Arrow
-import Data.List(foldl)
-import Data.Text.Lazy(unlines)
+import qualified Data.Text.Lazy as LT
 import Path hiding ((</>))
 import System.FilePath
 import Formatting
@@ -19,7 +18,7 @@ import Expr
 newtype PyModule = PyModule { pyModule :: Path Rel File } deriving (Hashable)
 
 toImportPath :: PyModule -> LText
-toImportPath = foldl (format (text % "." % text)) "" . fmap toS . splitDirectories . toFilePath . pyModule
+toImportPath = LT.intercalate "." . fmap toS . splitDirectories . dropExtension . toFilePath . pyModule
 
 data PyObject = PyObject { location :: PyModule, identifier :: LText } deriving (Generic)
 
@@ -29,8 +28,7 @@ instance Hashable PyObject where
 applyCode :: PyObject -> [PyObject] -> [(LText, PyObject)] -> [LText]
 applyCode obj args kwargs  =
     let paramString =
-            foldl (format (text % ", " % text)) "" $
-                (identifier <$> args) ++ (identifier . snd <$> kwargs)
+            LT.intercalate ", " $ (identifier <$> args) ++ (identifier . snd <$> kwargs)
     in let
         objects = args ++ (snd <$> kwargs) ++ [obj]
     in
@@ -38,16 +36,14 @@ applyCode obj args kwargs  =
                 . (toImportPath . location &&& identifier)
                 <$> objects)
         ++ [
-            "def run(data):",
-            format ("    return " % text % "(" % text % ")") (identifier obj) paramString
+            format ("result = " % text % "(" % text % ")") (identifier obj) paramString
         ]
     
 
 cachedApplyCode :: Path Abs Dir -> PyObject -> [PyObject] -> [(LText, PyObject)] -> [LText]
 cachedApplyCode cachePath obj args kwargs  =
     let paramString =
-            foldl (format (text % ", " % text)) "" $
-                (identifier <$> args) ++ (identifier . snd <$> kwargs)
+            LT.intercalate ", " $ (identifier <$> args) ++ (identifier . snd <$> kwargs)
     in let
         objects = args ++ (snd <$> kwargs) ++ [obj]
     in let
@@ -69,13 +65,13 @@ makeObject label funName = liftA2 (flip (PyObject . PyModule)) funName . addCont
 
 -- This should probably be written as a polyvariadic function, like printf "%s".
 apply :: (Applicative f, HasTargetPath f) => f PyObject -> f [PyObject] -> f [(LText, PyObject)] -> f PyObject
-apply = (((makeObject (pure . Just $ "apply") (pure "run") . fmap unlines).).) . liftE3 applyCode
+apply = (((makeObject (pure . Just $ "apply") (pure "run") . fmap LT.unlines).).) . liftE3 applyCode
 
 
 compose :: (Applicative f, HasTargetPath f) => f PyObject
 compose =
     let
-        code = unlines [
+        code = LT.unlines [
             "def compose(functions):",
             "    if functions == []:",
             "        return lambda x: x",
