@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 3e814c8e51bbb9e87788639978684a54cfa26bf23d3f67152d5dea27ee5f435b
+-- hash: 110d11aff039b4c745737b748de00b4169f3f141e7012f70daece7ef837e6393
 
 name:           iterbuild
 version:        0.1.0.0
@@ -12,7 +12,7 @@ description:    Please see the README on GitLab at <https://gitlab.com/adrianmar
 homepage:       https://github.com/githubuser/iterbuild#readme
 bug-reports:    https://github.com/githubuser/iterbuild/issues
 author:         Adrian Marti
-maintainer:     example@example.com
+maintainer:     adrianmarti384@gmail.com
 copyright:      2019 Adrian Marti
 license:        BSD3
 license-file:   LICENSE

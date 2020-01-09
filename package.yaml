@@ -3,7 +3,7 @@ version:             0.1.0.0
 github:              "githubuser/iterbuild"
 license:             BSD3
 author:              "Adrian Marti"
-maintainer:          "example@example.com"
+maintainer:          "adrianmarti384@gmail.com"
 copyright:           "2019 Adrian Marti"
 
 extra-source-files:
